@@ -33,3 +33,9 @@ class Base(DeclarativeBase):
     @declared_attr.directive
     def __table_args__(cls) -> tuple[Any, ...]:
         return table_args()
+
+    @declared_attr.directive
+    def __mapper_args__(cls) -> dict[str, Any]:
+        # Re-select server-generated values (created_at, ON UPDATE updated_at) right after
+        # INSERT/UPDATE, so reading them later never triggers an implicit load under asyncio.
+        return {"eager_defaults": True}

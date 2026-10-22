@@ -15,7 +15,8 @@ from app.db.session import CONNECT_ARGS
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Keep loggers that already exist (e.g. the app's, when migrations run in-process in tests).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

@@ -3,6 +3,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+import app.db.models  # noqa: F401  (register every model so relationships resolve at first use)
 from app.core.config import settings
 
 # Every connection works in UTC so CURRENT_TIMESTAMP defaults are stored as UTC.

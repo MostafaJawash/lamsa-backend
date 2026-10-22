@@ -1,23 +1,44 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.core.errors import register_exception_handlers
 from app.db.session import engine
 from app.integrations.storage import get_storage
+
+logger = logging.getLogger("app")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if settings.GOOGLE_DEV_MODE:
+        logger.warning(
+            "GOOGLE_DEV_MODE is ON: tokens like 'dev-google|<sub>|<email>|<name>' are accepted "
+            "without Google. Never enable this outside local development."
+        )
     yield
     await engine.dispose()
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
+
+register_exception_handlers(app)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=False,  # auth uses the Authorization header, not cookies
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Retry-After"],
+)
 
 app.include_router(api_router, prefix="/api/v1")
 

@@ -4,6 +4,9 @@ alembic==1.20.1
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1
+argon2-cffi==25.1.0
+argon2-cffi-bindings==26.1.0
+CacheControl==0.14.4
 certifi==2026.10.19
 cffi==2.1.1
 charset-normalizer==3.5.2
@@ -17,6 +20,7 @@ fastapi==0.159.1
 fastapi-cli==0.0.32
 fastapi-cloud-cli==0.26.0
 fastar==0.12.0
+google-auth==2.62.0
 googleapis-common-protos==1.75.5
 greenlet==3.5.6
 h11==0.16.0
@@ -32,6 +36,7 @@ Mako==1.4.3
 markdown-it-py==4.2.0
 MarkupSafe==3.0.4
 mdurl==0.1.2
+msgpack==1.2.3
 opentelemetry-api==1.45.1
 opentelemetry-exporter-http-transport==0.66b1
 opentelemetry-exporter-otlp-common==0.66b1
@@ -41,15 +46,20 @@ opentelemetry-proto==1.45.1
 opentelemetry-sdk==1.45.1
 opentelemetry-semantic-conventions==0.66b1
 packaging==26.3
+phonenumbers==9.0.41
 pillow==13.0.0
 pluggy==1.7.0
 protobuf==7.36.2
+pwdlib==0.3.1
+pyasn1==0.6.4
+pyasn1_modules==0.4.2
 pycparser==3.12
 pydantic==2.14.1
 pydantic-extra-types==2.11.1
 pydantic-settings==2.16.1
 pydantic_core==2.50.1
 Pygments==2.21.0
+PyJWT==2.15.1
 PyMySQL==1.2.3
 pytest==9.1.1
 python-dotenv==1.2.4

@@ -12,6 +12,7 @@ from app.db.types import str_enum
 from app.modules.users.enums import AuthProvider, DevicePlatform, UserRole
 
 if TYPE_CHECKING:
+    from app.modules.auth.models import RefreshToken
     from app.modules.cart.models import CartItem
     from app.modules.favorites.models import Favorite
     from app.modules.orders.models import Order
@@ -21,12 +22,24 @@ class User(IdMixin, TimestampMixin, Base):
     """A customer or admin.
 
     A row is created only once the user has a phone number: Google sign-in users
-    complete their profile (phone) first, so phone stays NOT NULL.
+    complete their profile (name + phone) first, so phone stays NOT NULL. The phone is not
+    verified (no SMS); one account per phone, conflicts are resolved by store support.
+
+    Account kinds (enforced by the service layer, not the database):
+    - auth_provider "phone": has password_hash, google_sub is NULL. Logs in with phone + password.
+    - auth_provider "google": has google_sub, password_hash is NULL. Logs in with Google.
+
+    must_change_password is set when an admin issues a temporary password; until the user
+    changes it, only a few endpoints are allowed (see app.shared.dependencies.auth).
     """
 
     __tablename__ = "users"
 
-    firebase_uid: Mapped[str] = mapped_column(String(128), unique=True)
+    google_sub: Mapped[str | None] = mapped_column(String(255), unique=True)  # Google "sub" claim
+    password_hash: Mapped[str | None] = mapped_column(String(255))  # Argon2, phone accounts only
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("0")
+    )
     name: Mapped[str] = mapped_column(String(100))
     phone: Mapped[str] = mapped_column(String(20), unique=True)  # E.164, e.g. +4915123456789
     email: Mapped[str | None] = mapped_column(String(255))
@@ -47,6 +60,9 @@ class User(IdMixin, TimestampMixin, Base):
         back_populates="user", lazy="raise", cascade="all, delete-orphan", passive_deletes=True
     )
     favorites: Mapped[list[Favorite]] = relationship(
+        back_populates="user", lazy="raise", cascade="all, delete-orphan", passive_deletes=True
+    )
+    refresh_tokens: Mapped[list[RefreshToken]] = relationship(
         back_populates="user", lazy="raise", cascade="all, delete-orphan", passive_deletes=True
     )
     # orders.user_id is ON DELETE RESTRICT: never cascade, never null out from the ORM.

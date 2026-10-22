@@ -1,6 +1,7 @@
 """Import every model so Base.metadata is complete (used by Alembic autogenerate)."""
 
 from app.db.base import Base
+from app.modules.auth.models import LoginAttempt, RefreshToken
 from app.modules.banners.models import Banner
 from app.modules.brands.models import Brand
 from app.modules.cart.models import CartItem
@@ -24,6 +25,7 @@ __all__ = [
     "CategoryVariantOption",
     "DeliveryMethod",
     "Favorite",
+    "LoginAttempt",
     "Notification",
     "NotificationRead",
     "Order",
@@ -32,6 +34,7 @@ __all__ = [
     "Product",
     "ProductImage",
     "ProductVariant",
+    "RefreshToken",
     "StoreSetting",
     "User",
     "UserAddress",
