@@ -167,7 +167,7 @@ async def test_http_caching_headers(
     assert not_modified.status_code == 304 and not_modified.content == b"" and not_modified.headers["etag"] == etag
     assert (await client.get(f"{PUBLIC}/products", headers={"If-None-Match": 'W/"other"'})).status_code == 200
 
-    for path, ttl in (("/categories", 300), ("/brands", 300), ("/banners", 60), (f"/products/{shop['simple']['slug']}", 30),
+    for path, ttl in (("/categories", 300), ("/brands", 300), ("/banners", 60), (f"/products/{shop['simple']['slug']}", 120),
                       ("/products/facets", 45), (f"/products/{shop['simple']['slug']}/related", 120)):
         assert (await client.get(PUBLIC + path)).headers["cache-control"].startswith(f"public, max-age={ttl},"), path
 
@@ -214,3 +214,29 @@ async def test_checkout_reads_delivery_fees_fresh(
     stale_total = f"{float(cart['subtotal']) + float(pickup['fee']):.2f}"
     placed = await client.post(ORDERS, json={"delivery_method_code": "pickup", "expected_total": stale_total}, headers=customer_headers)
     assert placed.status_code == 409 and placed.json()["error"]["code"] == "PRICE_CHANGED"  # checkout: fresh fee
+
+
+async def test_detail_with_its_long_ttl_is_still_fresh_after_admin_edits_and_orders(
+    client: AsyncClient, admin_headers: dict, customer_headers: dict, shop: dict, count_queries: Any
+) -> None:
+    """The detail TTL (120 s) is never what keeps it fresh: version bumps are."""
+    from app.shared.http_cache import TTL
+
+    assert TTL["product"] == 120
+    cream = shop["simple"]
+    path = f"{PUBLIC}/products/{cream['slug']}"
+    first = await client.get(path)
+    assert first.headers["cache-control"].startswith("public, max-age=120,")
+    hit, cached = await statements(client, count_queries, path)
+    assert hit == 0 and cached["name"] == "Cream"  # served from the cache
+
+    ok(await client.patch(f"{ADMIN}/products/{cream['id']}", json={"name": "Cream Deluxe", "sale_price": "7.00"},
+                          headers=admin_headers))
+    count, edited = await statements(client, count_queries, path)
+    assert count > 0 and (edited["name"], edited["current_price"]) == ("Cream Deluxe", "7.00")  # immediately
+
+    hit, _ = await statements(client, count_queries, path)
+    assert hit == 0  # cached again
+    await order_from_cart(client, customer_headers, [(cream["id"], None, 5)], method="pickup")  # the last 5 units
+    count, sold_out = await statements(client, count_queries, path)
+    assert count > 0 and (sold_out["in_stock"], sold_out["stock_status"]) == (False, "out")  # immediately

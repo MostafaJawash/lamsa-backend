@@ -33,7 +33,7 @@ TTL = {
     "banners": 60,
     "products": 45,
     "facets": 45,
-    "product": 30,
+    "product": 120,  # long on purpose: freshness comes from the catalog and per-product version bumps
     "related": 120,
 }
 

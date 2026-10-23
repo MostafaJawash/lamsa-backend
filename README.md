@@ -714,7 +714,7 @@ Only anonymous catalog responses are cached, as JSON bytes in Valkey. **Cart, ch
 | `GET /brands` (with or without `?category=`), `GET /brands/{slug}` | 300 s | any admin catalog change |
 | `GET /banners` | 60 s | any admin catalog change (a banner whose time window starts or ends shows up within 60 s) |
 | `GET /products` (all query parameters), `GET /products/facets` | 45 s | any admin catalog change; **not** after orders (see below) |
-| `GET /products/{slug}` | 30 s | any admin catalog change, **and** any change to that product's stock or price (orders, cancellations, stock adjusts) |
+| `GET /products/{slug}` | 120 s | any admin catalog change, **and** any change to that product's stock or price (orders, cancellations, stock adjusts). The long TTL is safe because these version bumps, not the TTL, keep the page fresh |
 | `GET /products/{slug}/related` | 120 s | any admin catalog change |
 
 TTLs vary by ±10 % so that entries don't all expire at once.

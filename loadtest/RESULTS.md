@@ -80,6 +80,6 @@ These are request-weighted averages of the per-endpoint percentiles. Before the 
 - **Pool.** `DB_POOL_SIZE=10`, `DB_MAX_OVERFLOW=10`, `DB_POOL_TIMEOUT=5` per worker, with MySQL `max_connections=150` (4 × 20 + worker + headroom) and `innodb_buffer_pool_size` at about 50–60 % of MySQL's RAM (`docker/mysql/my.cnf`).
 - **Cache.** Valkey on the same host (not through a port proxy), 256 MB, `allkeys-lru`, `CACHE_TIMEOUT_MS=1000`.
   - The cache roughly doubled throughput and cut latency severalfold here.
-  - Product-detail freshness comes from per-product versions, not the TTL, so that TTL could safely go from 30 s to 120 s, and the list TTLs to 60 s, for a higher hit ratio. 73.7 % was limited by random product views across 3,000 products.
+  - Product-detail freshness comes from per-product versions, not the TTL. **Done after these runs: the detail TTL is now 120 s** (it was 30 s during the measurements above), with a test showing that admin edits and the last unit sold still appear immediately. The list TTLs could go to 60 s as well. The 73.7 % hit ratio was limited by random product views across 3,000 products.
 - **Nginx in front** (`docker/nginx/lamsa.conf`). The 2 s micro-cache absorbs the identical anonymous requests of a post-campaign spike before they reach Python, and the per-IP limits protect login. This is the most effective protection against spikes, and it wasn't part of this measurement.
 - **Re-run this test on the production server** (Locust from another machine, `--host` pointing at it) before launch, to get real capacity figures.
