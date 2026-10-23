@@ -22,6 +22,18 @@ async def shop(client: AsyncClient, admin_headers: dict[str, str], db_session: A
     return await build_shop(client, admin_headers, db_session)
 
 
+CACHE_EVENTS = (events.CatalogChanged, events.ProductsChanged)
+
+
+def domain(recorded: list[events.DomainEvent]) -> list[events.DomainEvent]:
+    """The business events, without the cache-invalidation ones."""
+    return [e for e in recorded if not isinstance(e, CACHE_EVENTS)]
+
+
+def cache_slugs(recorded: list[events.DomainEvent]) -> set[str]:
+    return {slug for e in recorded if isinstance(e, events.ProductsChanged) for slug in e.slugs}
+
+
 @pytest.fixture
 def recorded() -> Iterator[list[events.DomainEvent]]:
     seen: list[events.DomainEvent] = []
@@ -41,9 +53,10 @@ async def test_events_after_commit(
     client: AsyncClient, admin_headers: dict, customer_headers: dict, shop: dict, recorded: list
 ) -> None:
     order = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 3)], method="pickup")
-    # Cream 5 -> 2 crosses the threshold (3): StockLow.
-    assert [type(e).__name__ for e in recorded] == ["OrderPlaced", "StockLow"]
-    placed, low = recorded
+    # Cream 5 -> 2 crosses the threshold (3): StockLow. ProductsChanged refreshes the cached page.
+    assert [type(e).__name__ for e in domain(recorded)] == ["OrderPlaced", "StockLow"]
+    assert cache_slugs(recorded) == {shop["simple"]["slug"], shop["bundle"]["slug"]}  # the bundle contains it
+    placed, low = domain(recorded)
     assert (placed.order_id, placed.total) == (order["id"], "24.00")
     assert (low.product_id, low.variant_id, low.stock, low.threshold) == (shop["simple"]["id"], None, 2, 3)
 
@@ -52,7 +65,8 @@ async def test_events_after_commit(
     assert [(type(e).__name__, e.from_status, e.to_status) for e in recorded] == [("OrderStatusChanged", "pending", "preparing")]
     recorded.clear()
     ok(await client.post(f"{ADMIN_ORDERS}/{order['id']}/cancel", json={"reason": "out of reach"}, headers=admin_headers))
-    assert [(type(e).__name__, e.by, e.stock_restored) for e in recorded] == [("OrderCancelled", "admin", True)]
+    assert [(type(e).__name__, e.by, e.stock_restored) for e in domain(recorded)] == [("OrderCancelled", "admin", True)]
+    assert shop["simple"]["slug"] in cache_slugs(recorded)  # stock restored: the product page is fresh again
 
 
 async def test_no_events_when_the_transaction_fails(
@@ -65,6 +79,10 @@ async def test_no_events_when_the_transaction_fails(
     async def failing_commit() -> None:
         raise RuntimeError("commit failed")
 
+    async def no_release(session: object) -> None:  # authentication must not commit first
+        return None
+
+    monkeypatch.setattr("app.shared.dependencies.auth.release_read_transaction", no_release)
     monkeypatch.setattr(db_session, "commit", failing_commit)
     failed = await place(client, customer_headers, method="pickup")
     assert failed.status_code == 500 and recorded == []

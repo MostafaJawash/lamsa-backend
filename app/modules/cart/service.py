@@ -8,7 +8,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -61,6 +63,7 @@ from app.shared.exceptions import (
     Conflict,
     ErrorCode,
     NotFound,
+    ServiceBusy,
     ValidationFailed,
     insufficient_stock,
     out_of_stock,
@@ -71,6 +74,7 @@ logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0.00")
 DEADLOCK = 1213
+DEADLOCK_ATTEMPTS = 3  # in all, for one write transaction
 REMOVABLE_ISSUES = {CartIssue.UNAVAILABLE, CartIssue.VARIANT_UNAVAILABLE, CartIssue.OUT_OF_STOCK}
 T = TypeVar("T")
 
@@ -407,8 +411,13 @@ class CartService:
         await self.loader.ensure_variants({r.product_id for r in rows if r.type == ProductType.variable})
         images = await repo.images_for(self.session, sorted({r.product_id for r in rows}))
         await self.loader.ensure_components({r.product_id for r in rows if r.type == ProductType.bundle})
-        methods, riding_limits = await repo.active_delivery_methods(self.session)
-        limits = limits or riding_limits or await load_limits(self.session)
+        # Checkout (lock_products) always reads delivery methods fresh; the cart view may use the
+        # per-process copy (a stale fee then ends in a clean PRICE_CHANGED at checkout).
+        if lock_products:
+            methods, riding_limits = await repo.active_delivery_methods(self.session)
+        else:
+            methods, riding_limits = await repo.cached_delivery_methods(self.session)
+        limits = limits or riding_limits or await load_limits(self.session, fresh=lock_products)
         cart, evaluated = build_cart(rows, limits, self.loader, images, methods, notices)
         return cart, (rows, images, methods, evaluated, limits)
 
@@ -423,17 +432,31 @@ class CartService:
     # ---------------------------------------------------------------- transaction
 
     async def retrying(self, operation: Callable[[], Awaitable[T]]) -> T:
-        """Run once; on a duplicate-key race or a deadlock, roll back and run once more."""
-        try:
-            return await operation()
-        except (IntegrityError, OperationalError) as exc:
-            is_deadlock = isinstance(exc, OperationalError) and getattr(exc.orig, "args", [None])[0] == DEADLOCK
-            if isinstance(exc, OperationalError) and not is_deadlock:
-                raise
-            logger.info("Retrying cart write for user %s after %s", self.user_id, type(exc).__name__)
-            await self.session.rollback()
-            self.loader = CartLoader(self.session)
-            return await operation()
+        """Run the transaction; retry it after a duplicate-key race (once) or an InnoDB deadlock
+        (up to DEADLOCK_ATTEMPTS in all, with a short random backoff). A deadlock that persists
+        under heavy contention (a flash sale) is overload: 503 SERVICE_BUSY, never a 500."""
+        attempt = 0
+        duplicate_retried = False
+        while True:
+            attempt += 1
+            try:
+                return await operation()
+            except (IntegrityError, OperationalError) as exc:
+                is_deadlock = isinstance(exc, OperationalError) and getattr(exc.orig, "args", [None])[0] == DEADLOCK
+                if isinstance(exc, OperationalError) and not is_deadlock:
+                    raise
+                await self.session.rollback()
+                self.loader = CartLoader(self.session)
+                if is_deadlock:
+                    if attempt >= DEADLOCK_ATTEMPTS:
+                        logger.warning("Cart write for user %s deadlocked %d times: SERVICE_BUSY", self.user_id, attempt)
+                        raise ServiceBusy(retry_after=1) from exc
+                    await asyncio.sleep(random.uniform(0.01, 0.05) * attempt)
+                elif duplicate_retried:
+                    raise
+                else:
+                    duplicate_retried = True
+                logger.info("Retrying cart write for user %s after %s", self.user_id, type(exc).__name__)
 
     async def lock(self) -> tuple[StoreLimits, CartPlan, list[LineRef]]:
         limits, refs = await repo.lock_user_with_lines(self.session, self.user_id)

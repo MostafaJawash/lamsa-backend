@@ -26,13 +26,13 @@ MAX_ADDRESSES = 10
 DELETED_USER_NAME = "حساب محذوف"
 
 
-async def confirm_password(user: User, password: str | None) -> None:
+async def confirm_password(user: User, password: str | None, session: AsyncSession | None = None) -> None:
     """Phone accounts must confirm sensitive changes with their current password."""
     if user.auth_provider != AuthProvider.phone or not user.password_hash:
         return
     if not password:
         raise ValidationFailed(ErrorCode.CURRENT_PASSWORD_REQUIRED)
-    valid, _ = await verify_password_async(password, user.password_hash)
+    valid, _ = await verify_password_async(password, user.password_hash, release=session)
     if not valid:
         raise Unauthorized(ErrorCode.INVALID_CREDENTIALS)
 
@@ -52,7 +52,7 @@ class UserService:
 
     async def change_phone(self, user: User, data: PhoneChange) -> User:
         phone = normalize_phone(data.phone)
-        await confirm_password(user, data.current_password)
+        await confirm_password(user, data.current_password, self.session)
         if phone == user.phone:
             return user
         if await users_repo.phone_taken(self.session, phone, exclude_user_id=user.id):
@@ -64,7 +64,7 @@ class UserService:
 
     async def delete_account(self, user: User, current_password: str | None) -> None:
         """Delete the account, or anonymise it if it has orders (orders keep their snapshots)."""
-        await confirm_password(user, current_password)
+        await confirm_password(user, current_password, self.session)
         user_id = user.id
         if await users_repo.count_orders(self.session, user_id) == 0:
             await users_repo.delete_user(self.session, user_id)

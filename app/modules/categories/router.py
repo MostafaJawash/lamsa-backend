@@ -1,6 +1,7 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile, status
+from pydantic import TypeAdapter
 
 from app.modules.categories.schemas import (
     AdminAttributeOut,
@@ -17,11 +18,13 @@ from app.modules.categories.schemas import (
     VariantOptionUpdate,
 )
 from app.modules.categories.service import AdminCategoryService, CategoryCatalogService
+from app.shared.catalog_cache import catalog_write
+from app.shared.http_cache import serve_cached
 from app.shared.dependencies.auth import AdminUser, DbSession
 from app.shared.utils.uploads import limit_upload_body, read_upload
 
 router = APIRouter(prefix="/categories", tags=["catalog"])
-admin_router = APIRouter(prefix="/admin/categories", tags=["admin-catalog"])
+admin_router = APIRouter(prefix="/admin/categories", tags=["admin-catalog"], dependencies=[Depends(catalog_write)])
 
 
 def get_catalog_service(session: DbSession) -> CategoryCatalogService:
@@ -39,16 +42,20 @@ SingleUpload = Depends(limit_upload_body(1))
 # ------------------------------------------------------------------------------- public
 
 
+TREE_ADAPTER: TypeAdapter[list[CategoryNode]] = TypeAdapter(list[CategoryNode])
+DETAIL_ADAPTER: TypeAdapter[CategoryDetailOut] = TypeAdapter(CategoryDetailOut)
+
+
 @router.get("", response_model=list[CategoryNode])
-async def list_categories(service: Catalog) -> list[CategoryNode]:
+async def list_categories(request: Request, service: Catalog) -> Response:
     """Visible categories as a tree, with visible product counts (own + children)."""
-    return await service.tree()
+    return await serve_cached(request, "categories", [], TREE_ADAPTER, service.tree)
 
 
 @router.get("/{slug}", response_model=CategoryDetailOut)
-async def get_category(slug: str, service: Catalog) -> CategoryDetailOut:
+async def get_category(request: Request, slug: str, service: Catalog) -> Response:
     """Category with breadcrumb, visible children and its effective filter definitions."""
-    return await service.detail(slug)
+    return await serve_cached(request, "category", [slug], DETAIL_ADAPTER, lambda: service.detail(slug))
 
 
 # -------------------------------------------------------------------------------- admin

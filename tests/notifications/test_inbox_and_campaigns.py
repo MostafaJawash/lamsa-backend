@@ -77,8 +77,9 @@ async def test_inbox_lists_own_and_broadcast_rows_newest_first(
 
 
 async def test_marketing_switched_off_is_hidden_from_the_inbox(
-    client: AsyncClient, customer_headers: dict, db_session: AsyncSession
+    client: AsyncClient, customer_headers: dict, db_session: AsyncSession, frozen_clock: FakeClock
 ) -> None:
+    frozen_clock.now = NOON  # marketing waits during quiet hours: never depend on the time of day
     me_id = await me(client, customer_headers)
     await _send(db_session, Draft(NotificationType.marketing, _text("sale"), None),
                 Draft(NotificationType.message, _text("hello"), me_id))
@@ -90,8 +91,9 @@ async def test_marketing_switched_off_is_hidden_from_the_inbox(
 
 
 async def test_links_to_hidden_targets_and_admin_links_are_dropped(
-    client: AsyncClient, admin_headers: dict, customer_headers: dict, db_session: AsyncSession
+    client: AsyncClient, admin_headers: dict, customer_headers: dict, db_session: AsyncSession, frozen_clock: FakeClock
 ) -> None:
+    frozen_clock.now = NOON  # marketing waits during quiet hours: never depend on the time of day
     category = await create_category(client, admin_headers, "Inbox Cat", slug="inbox-cat")
     product = await published_product(client, admin_headers, name="Inbox Cream", category_id=category["id"], price="5.00", stock=3)
     admin_id = await me(client, admin_headers)

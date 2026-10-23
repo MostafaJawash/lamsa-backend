@@ -1,17 +1,20 @@
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile, status
+from pydantic import TypeAdapter
 
 from app.modules.banners.schemas import AdminBannerOut, BannerOrder, BannerOut, BannerUpdate
 from app.modules.banners.service import AdminBannerService, BannerService
 from app.modules.notifications.schemas import LinkIn, to_naive_utc
+from app.shared.catalog_cache import catalog_write
+from app.shared.http_cache import serve_cached
 from app.shared.dependencies.auth import AdminUser, DbSession
 from app.shared.enums import LinkType
 from app.shared.utils.uploads import limit_upload_body, read_upload
 
 router = APIRouter(prefix="/banners", tags=["banners"])
-admin_router = APIRouter(prefix="/admin/banners", tags=["admin-banners"])
+admin_router = APIRouter(prefix="/admin/banners", tags=["admin-banners"], dependencies=[Depends(catalog_write)])
 
 
 def get_service(session: DbSession) -> BannerService:
@@ -26,11 +29,14 @@ Service = Annotated[BannerService, Depends(get_service)]
 Admin = Annotated[AdminBannerService, Depends(get_admin_service)]
 
 
+BANNERS_ADAPTER: TypeAdapter[list[BannerOut]] = TypeAdapter(list[BannerOut])
+
+
 @router.get("", response_model=list[BannerOut])
-async def list_banners(service: Service) -> list[BannerOut]:
+async def list_banners(request: Request, service: Service) -> Response:
     """Active banners in their time window (at most 10), in the admin's order. Banners linking
     to a hidden category / product / brand are skipped."""
-    return await service.public()
+    return await serve_cached(request, "banners", [], BANNERS_ADAPTER, service.public)
 
 
 @admin_router.get("", response_model=list[AdminBannerOut])

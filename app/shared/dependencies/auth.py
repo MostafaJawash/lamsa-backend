@@ -14,7 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import AccessClaims, decode_access_token
-from app.db.session import get_db
+from app.db.session import get_db, release_read_transaction
 from app.modules.users.enums import UserRole
 from app.modules.users.models import User
 from app.shared.exceptions import ErrorCode, Forbidden, Unauthorized
@@ -40,6 +40,9 @@ async def _authenticate(credentials: HTTPAuthorizationCredentials | None, sessio
         raise Unauthorized(ErrorCode.USER_NOT_FOUND)
     if not user.is_active:
         raise Forbidden(ErrorCode.ACCOUNT_DISABLED)
+    # The user is loaded: give the connection back to the pool until the endpoint queries again
+    # (cached catalog responses may not query at all).
+    await release_read_transaction(session)
     return AuthContext(user=user, claims=claims)
 
 

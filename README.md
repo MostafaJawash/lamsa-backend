@@ -18,6 +18,12 @@ copy .env.test.example .env.test    # the tests' database connection; set DB_PAS
 .\venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(48))"   # JWT_SECRET
 ```
 
+Start the cache (optional: without it every request simply goes to the database):
+
+```powershell
+docker compose up -d valkey
+```
+
 Create the databases and user once, as MySQL root:
 
 ```sql
@@ -51,7 +57,11 @@ FLUSH PRIVILEGES;
 | `GOOGLE_DEV_MODE` | `false` | accept fake Google tokens; **only with `APP_ENV=development`** (the app refuses to start otherwise) |
 | `DEFAULT_PHONE_REGION` | `DE` | region for phone numbers written without country code |
 | `CORS_ORIGINS` | `http://localhost:3000,...` | comma separated |
-| `TRUST_PROXY_HEADERS` | `false` | set `true` only behind your own reverse proxy (client IP from `X-Forwarded-For`) |
+| `TRUST_PROXY_HEADERS` | `false` | set `true` only behind your own reverse proxy that overwrites `X-Forwarded-For` (client IP for rate limits). **Never** enable it when clients can reach the API directly |
+| `CACHE_ENABLED`, `CACHE_URL`, `CACHE_KEY_PREFIX`, `CACHE_TIMEOUT_MS` | `true`, `redis://127.0.0.1:6379/0`, `lamsa:`, `1000` | Valkey cache (see *Performance*) |
+| `PASSWORD_HASH_CONCURRENCY`, `PASSWORD_HASH_QUEUE_TIMEOUT` | cores, `5` | hashes at once per process; seconds to wait before 503 SERVICE_BUSY |
+| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT`, `DB_POOL_RECYCLE` | `10`, `10`, `5`, `3600` | database pool per process (see *Production tuning*) |
+| `SLOW_QUERY_MS`, `SLOW_REQUEST_MS` | `200`, `1000` | slow-query and slow-request warnings |
 
 ## Run
 
@@ -96,6 +106,7 @@ Create the first admin with one of these. The password is asked interactively an
 - Images go to a temporary `MEDIA_ROOT` per test.
 - MySQL FULLTEXT only sees committed rows, so the search tests (`tests/catalog/test_search.py`) really commit to `lamsa_test` and wipe the catalog and user tables afterwards.
 - The list, detail, facets and category tree endpoints have a query-budget test (6 or fewer SQL statements, independent of page size).
+- The catalog cache is an in-memory fake per test (same interface as Valkey); `tests/core/test_valkey_integration.py` runs against a real Valkey and is skipped when none is reachable. Tests that change catalog rows with direct SQL call `bump_catalog()`, which is what an admin change does after its commit.
 - Pushes never leave the machine: a fake sender captures them, and background dispatch is off, so tests call the dispatcher themselves. The notification pipeline gets its own session inside the test transaction. Query-budget tests count its statements separately from the request's.
 
 ## Migrations
@@ -277,6 +288,7 @@ Every error, including validation errors and unexpected ones, has this shape:
 | 422 | `INVALID_SCHEDULE` | `scheduled_at` is less than 1 minute or more than 90 days ahead (`details`: `{earliest, latest}`) |
 | 422 | `INVALID_LINK` | A banner or campaign link breaks the link rules (`details`: `{reason, link_type, value?}`) |
 | 404 | `BANNER_NOT_FOUND` | Unknown banner |
+| 503 | `SERVICE_BUSY` | Overloaded right now (hashing queue full, database pool exhausted, persistent deadlock). Wait `Retry-After` seconds and retry once (`details.retry_after`) |
 | 422 | `BANNER_ORDER_MISMATCH` | `banner_ids` doesn't list every banner exactly once (`details.expected`) |
 
 `OUT_OF_STOCK`, `INSUFFICIENT_STOCK` and `QUANTITY_LIMIT_EXCEEDED` are also used as cart **line issue** codes (same meaning, see below). `PRODUCT_NOT_FOUND` and `VARIANT_NOT_FOUND` (404) are reused by the cart for hidden products and missing or inactive variants.
@@ -519,7 +531,7 @@ Stock is taken when the order is placed and given back when it's cancelled. If t
 - **Cancelling:** `POST /admin/orders/{id}/cancel {reason (3–255 characters), restore_stock=true}` works from `pending`, `preparing`, `shipped` or `ready_for_pickup`. Use `restore_stock=false` only for `shipped` orders whose goods are lost or not returned.
 - **Stats:** `GET /admin/orders/stats?date_from=&date_to=` returns counts per status, `delivered_revenue`, `average_order_value`, `cancelled_rate` and the top 5 products by quantity (delivered orders only).
 
-Domain events (`OrderPlaced`, `OrderStatusChanged`, `OrderCancelled`, `StockLow`, `StockOut`, `ProductBackInStock` and `ProductPriceDropped`) are published in-process after each commit (`app/shared/events`, `commit_and_publish`). Nothing is published for a transaction that rolled back. The notification handlers subscribe to these events (see below).
+Domain events (`OrderPlaced`, `OrderStatusChanged`, `OrderCancelled`, `StockLow`, `StockOut`, `ProductBackInStock`, `ProductPriceDropped`, and the cache events `CatalogChanged` and `ProductsChanged`) are published in-process after each commit (`app/shared/events`, `commit_and_publish`). Nothing is published for a transaction that rolled back. The notification handlers subscribe to these events (see below).
 
 ## Notifications for app developers
 
@@ -689,6 +701,130 @@ Admin responses show everything: inactive items, exact stock, SKUs, timestamps, 
 Images are removed from storage only after the database change commits, and new files are cleaned up if the commit fails.
 
 ---
+
+## Performance: caching and load protection
+
+### What is cached
+
+Only anonymous catalog responses are cached, as JSON bytes in Valkey. **Cart, checkout, stock, auth, orders, notifications and everything under `/admin` are never cached.**
+
+| Endpoint | TTL | Fresh again after |
+|---|---|---|
+| `GET /categories`, `GET /categories/{slug}` | 300 s | any admin catalog change |
+| `GET /brands` (with or without `?category=`), `GET /brands/{slug}` | 300 s | any admin catalog change |
+| `GET /banners` | 60 s | any admin catalog change (a banner whose time window starts or ends shows up within 60 s) |
+| `GET /products` (all query parameters), `GET /products/facets` | 45 s | any admin catalog change; **not** after orders (see below) |
+| `GET /products/{slug}` | 30 s | any admin catalog change, **and** any change to that product's stock or price (orders, cancellations, stock adjusts) |
+| `GET /products/{slug}/related` | 120 s | any admin catalog change |
+
+TTLs vary by ±10 % so that entries don't all expire at once.
+
+- **`is_favorite` is never stored.** The cache holds the anonymous response. For a logged-in user, `is_favorite` is filled in with one query per request, as before.
+- **Product pages are fresh; lists may be stale.** A product page shows "out of stock" right after the last unit is sold. Lists, facets and related products may show it as in stock for up to their TTL. That's on purpose: checkout re-checks stock in its own transaction, so a stale list can never sell something that isn't there.
+- **Invalidation uses versions, never key scans.** Every key contains a global catalog version, and product pages also contain a per-product version. Both are random tokens, bumped only after a successful commit (through `commit_and_publish`):
+  - every POST, PUT, PATCH or DELETE on `/admin/categories`, `/admin/brands`, `/admin/products` and `/admin/banners` bumps the catalog version;
+  - any stock or price change (orders, cancellations, stock adjusts, edits) bumps the version of the products concerned.
+
+  Key format: `lamsa:c:<CACHE_SCHEMA_VERSION>:<catalog version>:<kind>:<parts>` (product pages: `…:p:<product version>:product:<slug>`). List keys hash the normalized query (parameters sorted, defaults filled in, unknown parameters ignored).
+- **Deploys and code changes.** Every API process bumps the catalog version when it starts, so a new deploy never serves entries written by the old code. **Bump `CACHE_SCHEMA_VERSION` in `app/core/cache.py` whenever a cached response model changes.**
+- **Settings and delivery fees** are kept per process for 60 s, because many requests read them. `seed_base` and SQL changes reach the other processes within 60 s. **Checkout always reads delivery fees fresh**: a fee shown stale in the cart ends in a clean `409 PRICE_CHANGED`, never a wrong charge.
+- **Stampedes are prevented.** One computation per key runs at a time across all processes (a lock with `SET NX PX`); the others wait up to 1 s for its result.
+- **The cache is optional.** If Valkey is down or slow, requests skip it: after 3 consecutive errors, the cache is skipped for 5 s, and a warning is logged at most once a minute. A cache problem never causes an error response. Each process uses a bounded pool of 32 connections.
+
+**Running Valkey (development):** `docker compose up -d valkey` (Valkey 9.1.2; only on 127.0.0.1:6379, 256 MB, LRU, no persistence). Settings:
+
+| Key | Default | Notes |
+|---|---|---|
+| `CACHE_ENABLED` | `true` | `false` turns the cache off completely |
+| `CACHE_URL` | `redis://127.0.0.1:6379/0` | |
+| `CACHE_KEY_PREFIX` | `lamsa:` | |
+| `CACHE_TIMEOUT_MS` | `1000` | connect and read timeout per call (see *Production tuning*) |
+
+### HTTP caching (for app developers)
+
+- **Cached public endpoints, without `Authorization`:** `Cache-Control: public, max-age=<TTL>, stale-while-revalidate=60`, a weak `ETag` and `Vary: Authorization`.
+- **The same endpoints with `Authorization`:** `Cache-Control: private, no-cache` (the response contains your `is_favorite` values).
+- **Everything else:** `Cache-Control: no-store`.
+
+To revalidate, send the last `ETag` in `If-None-Match`; an unchanged response comes back as `304` with no body. Images under `/media` are immutable: cache them forever.
+
+**`503 SERVICE_BUSY`** means the server is overloaded right now: the password-hashing queue is full, the database pool is exhausted, or a database deadlock persisted. It always carries `Retry-After` (seconds). **Wait that long and retry once**; if it fails again, show the error. The request had no effect.
+
+### Load protection
+
+- **Password hashing.** Argon2id with the OWASP baseline (19 MiB, t=2, p=1; about 40 ms per hash on a laptop). Older hashes still verify and are re-hashed on the next login.
+  - At most `PASSWORD_HASH_CONCURRENCY` hashes run at once per process; the default is the number of cores. With several workers on one machine, set it to *cores ÷ workers*.
+  - A request that waits longer than `PASSWORD_HASH_QUEUE_TIMEOUT` (5 s) gets `503 SERVICE_BUSY`. This applies to every path: register, login (including the dummy check for unknown phones), password change, admin reset and the `create_admin` script.
+  - The database connection is released while a request waits for hashing.
+- **Database pool.** Settings: `DB_POOL_SIZE` (10), `DB_MAX_OVERFLOW` (10), `DB_POOL_TIMEOUT` (5 s), `DB_POOL_RECYCLE` (3600 s). A request that waits longer than the timeout gets `503 SERVICE_BUSY`, not a 500. Authenticated requests release their connection right after the user is loaded.
+- **Deadlocks** (MySQL 1213) in cart writes and checkout are retried up to 3 times with a short random backoff. After that the request returns `503 SERVICE_BUSY`.
+- **Observability.** One JSON line per request (logger `app.access`), for example:
+
+  `{"request_id", "method", "path" (the route template), "status", "duration_ms", "db_statements", "db_ms", "cache": {"hit", "miss", "bypass"}}`
+
+  - `X-Request-ID` is echoed back, or generated when it's missing.
+  - Statements slower than `SLOW_QUERY_MS` (200) and requests slower than `SLOW_REQUEST_MS` (1000) are logged as warnings (logger `app.slow`).
+  - In development, `Server-Timing` shows app and database time.
+
+## Load testing
+
+Everything runs against the dedicated database **`lamsa_load`**, never `lamsa` or `lamsa_test`. The seed script, the monitor and the run script all refuse any other database. Push notifications use the log backend.
+
+One-time setup:
+
+```powershell
+# As MySQL root (once):
+#   CREATE DATABASE lamsa_load CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+#   GRANT ALL ON lamsa_load.* TO 'lamsa'@'localhost';
+$env:DB_NAME = "lamsa_load"
+.\venv\Scripts\alembic.exe upgrade head
+.\venv\Scripts\python.exe -m scripts.seed_base
+python -m venv .venv-load                                   # Locust stays out of requirements.txt
+.\.venv-load\Scripts\python.exe -m pip install -r loadtest\requirements.txt
+docker compose up -d valkey
+```
+
+Run (about 11 minutes each; results in `loadtest\results\cache-on|off\`):
+
+```powershell
+.\scripts\run_loadtest.ps1 -Cache on
+.\scripts\run_loadtest.ps1 -Cache off
+```
+
+The script:
+1. Re-seeds `lamsa_load` with `scripts/seed_load_data.py`: 3,000 products of every type, 10,000 users with devices, addresses, favorites and carts, all with the password `LoadTest-pass1`.
+2. Starts 4 API processes (ports 8001–8004) and the worker process with production-like settings.
+3. Runs Locust in four phases:
+   - **browse:** anonymous browsing, logged-in browsing and shoppers, at 50, 200, 500 and 1,000 users;
+   - **flash:** 300 buyers for one product with stock 50, then a database check that stock never went negative and units sold equal the starting stock;
+   - **login:** a login burst;
+   - **broadcast:** a campaign to all 10,000 users while browsing continues.
+
+`TRUST_PROXY_HEADERS=true` is set **inside the run script only**, so each simulated user can send its own fake client IP. **Never enable it in production unless the API is behind a trusted proxy that overwrites `X-Forwarded-For`** (as `docker/nginx/lamsa.conf` does).
+
+Results and their interpretation: `loadtest/RESULTS.md`.
+
+## Production tuning
+
+- **Processes.** Run one Uvicorn worker per core, either `uvicorn app.main:app --workers 4 --proxy-headers --timeout-keep-alive 15` or Gunicorn with `-k uvicorn.workers.UvicornWorker -w 4`. Behind Nginx, keep-alive on both sides (`keepalive 32` upstream). Set `RUN_WORKER_IN_APP=false` and run `python -m app.workers.run` as its own service.
+- **Database connections:** workers × (`DB_POOL_SIZE` + `DB_MAX_OVERFLOW`) + worker process (≈ 20) + headroom for admin, backups and migrations (≈ 20) ≤ MySQL `max_connections`.
+
+  Example, 4 cores: 4 × (10 + 10) + 20 + 20 = 120 → `max_connections = 150`.
+- **MySQL on a small VPS** (see `docker/mysql/my.cnf`, not applied by anything):
+  - `innodb_buffer_pool_size` about 50–60 % of the RAM MySQL may use;
+  - slow query log on with `long_query_time = 0.2`;
+  - `innodb_flush_log_at_trx_commit = 1` (orders must be durable).
+- **Password hashing:** `PASSWORD_HASH_CONCURRENCY` = cores ÷ workers (e.g. 1 with 4 workers on 4 cores).
+- **Cache:** run Valkey on the same host or a private network, never exposed, with `maxmemory` and `allkeys-lru`.
+  - Keep `CACHE_TIMEOUT_MS` at about 1 s. On a busy asyncio worker the timeout also measures event-loop lag, and the load test showed that 150 ms switched a healthy cache off exactly under load.
+- **Nginx:** `docker/nginx/lamsa.conf` (validated with `nginx -t`). It provides:
+  - a 2 s micro-cache for anonymous catalog GETs;
+  - gzip;
+  - `/media` with 1-year immutable caching;
+  - per-IP rate limits (strict on login, register and Google sign-in) that return the API's JSON error format;
+  - `X-Forwarded-For` overwritten with the real client address.
+
+  Try it locally with the commented `nginx` service in `docker-compose.yml` (profile `proxy`).
 
 ## Schema conventions
 

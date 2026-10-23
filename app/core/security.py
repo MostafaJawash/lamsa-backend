@@ -8,19 +8,23 @@ Token types (the "type" claim is always checked, so one kind can never be used a
 JWT iat/exp use real time (PyJWT validates them against the system clock).
 """
 
+import asyncio
 import hashlib
 import secrets
+import weakref
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Any, Literal
 from uuid import uuid4
 
+import anyio
 import jwt
 from pwdlib import PasswordHash
+from pwdlib.hashers.argon2 import Argon2Hasher
 
 from app.core.config import settings
-from app.shared.exceptions import ErrorCode, Unauthorized, ValidationFailed
+from app.shared.exceptions import ErrorCode, ServiceBusy, Unauthorized, ValidationFailed
 
 TokenType = Literal["access", "google_signup"]
 
@@ -34,7 +38,21 @@ TEMP_PASSWORD_DIGITS = "23456789"
 
 # ---------------------------------------------------------------------------- passwords
 
-password_hasher = PasswordHash.recommended()  # Argon2id with pwdlib's recommended parameters
+# Argon2id with the OWASP baseline: 19 MiB, 2 iterations, 1 lane (about 40 ms per hash on an
+# 8-core laptop, and 19 MiB per concurrent operation instead of pwdlib's default 64 MiB). Hashes
+# made with other parameters still verify and are re-hashed on the next successful login.
+ARGON2_MEMORY_COST_KIB = 19456
+ARGON2_TIME_COST = 2
+ARGON2_PARALLELISM = 1
+
+
+def build_password_hasher() -> PasswordHash:
+    return PasswordHash(
+        (Argon2Hasher(memory_cost=ARGON2_MEMORY_COST_KIB, time_cost=ARGON2_TIME_COST, parallelism=ARGON2_PARALLELISM),)
+    )
+
+
+password_hasher = build_password_hasher()
 
 
 def hash_password(password: str) -> str:
@@ -57,6 +75,54 @@ def _dummy_hash() -> str:
 def verify_dummy_password(password: str) -> None:
     """Spend the same time as a real verification when there is no account to check."""
     verify_password(password, _dummy_hash())
+
+
+# --- under load: every hash/verify goes through ONE limiter per process (and a worker thread) ---
+
+_limiters: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+
+
+def _limiter() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    limiter = _limiters.get(loop)
+    if limiter is None:
+        limiter = _limiters[loop] = asyncio.Semaphore(settings.PASSWORD_HASH_CONCURRENCY)
+    return limiter
+
+
+def reset_hash_limiter() -> None:
+    """Tests: forget the limiters (after changing PASSWORD_HASH_CONCURRENCY)."""
+    _limiters.clear()
+
+
+async def _limited(func: Any, *args: Any) -> Any:
+    """Run a hash/verify in a worker thread, at most PASSWORD_HASH_CONCURRENCY at once. Waiting
+    longer than PASSWORD_HASH_QUEUE_TIMEOUT raises 503 SERVICE_BUSY (Retry-After), so a login
+    burst queues briefly and then sheds load instead of exhausting memory or CPU."""
+    limiter = _limiter()
+    try:
+        await asyncio.wait_for(limiter.acquire(), timeout=settings.PASSWORD_HASH_QUEUE_TIMEOUT)
+    except TimeoutError:
+        raise ServiceBusy(retry_after=2) from None
+    try:
+        return await anyio.to_thread.run_sync(func, *args)
+    finally:
+        limiter.release()
+
+
+async def hash_password_async(password: str) -> str:
+    result: str = await _limited(hash_password, password)
+    return result
+
+
+async def verify_password_async(password: str, password_hash: str) -> tuple[bool, str | None]:
+    result: tuple[bool, str | None] = await _limited(verify_password, password, password_hash)
+    return result
+
+
+async def verify_dummy_password_async(password: str) -> None:
+    """Unknown phone: same cost AND same queue as a real verification (constant timing)."""
+    await _limited(verify_dummy_password, password)
 
 
 def validate_password(password: str, phone: str | None = None) -> None:

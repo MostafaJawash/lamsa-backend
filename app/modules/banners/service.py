@@ -14,6 +14,7 @@ from app.modules.banners.schemas import AdminBannerOut, BannerOut, BannerState, 
 from app.modules.notifications.links import Link, is_visible, validate_catalog_link, visible_link_targets
 from app.modules.notifications.schemas import LinkIn, LinkOut
 from app.integrations.storage.transaction import MediaTransaction
+from app.shared.events import commit_and_publish
 from app.shared.enums import LinkType
 from app.shared.exceptions import ErrorCode, NotFound, ValidationFailed
 from app.shared.schemas import image_urls
@@ -130,7 +131,7 @@ class AdminBannerService:
         check_window(banner.starts_at, banner.ends_at)
         now = clock.now_utc()
         banner.updated_at = now
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return admin_banner_out(banner, now)
 
     async def set_image(self, banner_id: int, image: bytes) -> AdminBannerOut:
@@ -159,7 +160,7 @@ class AdminBannerService:
         by_id = {b.id: b for b in banners}
         for index, banner_id in enumerate(banner_ids):
             by_id[banner_id].sort_order = index
-        await self.session.commit()
+        await commit_and_publish(self.session)
         now = clock.now_utc()
         return [admin_banner_out(by_id[i], now) for i in banner_ids]
 

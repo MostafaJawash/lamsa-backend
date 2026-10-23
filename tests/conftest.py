@@ -64,6 +64,8 @@ TEST_SETTINGS = {
     "STORAGE_BACKEND": "local",
     "PUSH_BACKEND": "log",  # never Firebase
     "RUN_WORKER_IN_APP": "false",
+    "CACHE_ENABLED": "true",  # tests install an in-memory cache (memory_cache fixture)
+    "CACHE_URL": "redis://127.0.0.1:6379/15",  # only the real-Valkey integration tests use it
 }
 os.environ.update(TEST_SETTINGS)
 os.environ.pop("FIREBASE_CREDENTIALS_PATH", None)
@@ -76,6 +78,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine  # noqa: E4
 from sqlalchemy.pool import NullPool  # noqa: E402
 
 from app.core import clock, security  # noqa: E402
+from app.core.cache import Cache, MemoryBackend, set_cache  # noqa: E402
+from app.core.local_cache import local_cache  # noqa: E402
+from app.core.middleware import instrument_engine  # noqa: E402
 from app.core.config import settings  # noqa: E402
 from app.db.session import CONNECT_ARGS, get_db  # noqa: E402
 from app.integrations.google import auth as google_auth  # noqa: E402
@@ -145,6 +150,7 @@ IN_PIPELINE: contextvars.ContextVar[bool] = contextvars.ContextVar("in_pipeline"
 @pytest.fixture
 async def db_session(migrated_db: None) -> AsyncIterator[AsyncSession]:
     engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool, connect_args=CONNECT_ARGS)
+    instrument_engine(engine.sync_engine)  # request statistics and slow-query log, like the app engine
     async with engine.connect() as connection:
         transaction = await connection.begin()
         session = AsyncSession(bind=connection, join_transaction_mode="create_savepoint", expire_on_commit=False)
@@ -193,6 +199,27 @@ class FakePushSender:
             code = queue.pop(0) if queue else push.OK
             results.append(PushResult(m.token, code, None if code == push.OK else f"fake {code}"))
         return results
+
+
+@pytest.fixture(autouse=True)
+def memory_cache() -> Iterator[Cache]:
+    """Every test gets its own empty in-memory cache (same interface as Valkey), an empty
+    in-process settings copy and fresh password-hash limiters."""
+    cache = Cache(MemoryBackend(), "lamsa-test:")
+    set_cache(cache)
+    local_cache.clear()
+    security.reset_hash_limiter()
+    yield cache
+    set_cache(None)
+    local_cache.clear()
+    security.reset_hash_limiter()
+
+
+async def bump_catalog() -> None:
+    """For tests that change catalog rows with direct SQL: what an admin change does after commit."""
+    from app.shared.catalog_cache import bump_catalog as bump
+
+    await bump()
 
 
 @pytest.fixture(autouse=True)

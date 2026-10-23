@@ -11,3 +11,6 @@ media/
 secrets/
 *firebase-adminsdk*.json
 .env.test
+media-load/
+.venv-load/
+loadtest/results/

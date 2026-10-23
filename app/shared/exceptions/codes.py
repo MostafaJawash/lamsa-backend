@@ -113,6 +113,7 @@ class ErrorCode(StrEnum):
     NOTIFICATION_NOT_EDITABLE = "NOTIFICATION_NOT_EDITABLE"
     INVALID_SCHEDULE = "INVALID_SCHEDULE"
     INVALID_LINK = "INVALID_LINK"
+    SERVICE_BUSY = "SERVICE_BUSY"
 
 
 # Default short Arabic message per code, shown to the user by the app.
@@ -199,6 +200,7 @@ MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.NOTIFICATION_NOT_EDITABLE: "لا يمكن تعديل هذا الإشعار لأنه لم يعد مجدولاً.",
     ErrorCode.INVALID_SCHEDULE: "وقت الإرسال غير صحيح: بعد دقيقة على الأقل وخلال ٩٠ يوماً.",
     ErrorCode.INVALID_LINK: "الرابط غير صحيح.",
+    ErrorCode.SERVICE_BUSY: "الخدمة مشغولة حالياً، حاول مرة أخرى بعد لحظات.",
 }
 
 

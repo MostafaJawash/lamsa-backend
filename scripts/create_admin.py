@@ -57,7 +57,7 @@ async def main(name: str, raw_phone: str) -> int:
                 name=name,
                 phone=phone,
                 auth_provider=AuthProvider.phone,
-                password_hash=security.hash_password(password),
+                password_hash=await security.hash_password_async(password),
                 role=UserRole.admin,
                 created_at=clock.utcnow(),
             )

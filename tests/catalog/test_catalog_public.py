@@ -1,6 +1,8 @@
 from typing import Any
 
 import pytest
+
+from conftest import bump_catalog
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -210,6 +212,7 @@ async def test_detail_simple_and_stock_display(
     # The test database has no store settings (default threshold 3); set it to 1.
     db_session.add(StoreSetting(key="low_stock_threshold", value=1))
     await db_session.commit()
+    await bump_catalog()  # direct SQL: what a settings change must trigger
     assert ok(await client.get(f"{PUBLIC}/products/{catalog['d']['slug']}"))["stock_status"] == "in_stock"
 
 

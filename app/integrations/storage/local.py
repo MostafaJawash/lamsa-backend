@@ -18,8 +18,9 @@ class LocalStorage:
         self.root = Path(root).resolve()
         self.base_url = base_url.rstrip("/")
 
-    def path_for(self, key: str) -> Path:
-        """Map a key to a path under root, rejecting anything that could escape it."""
+    @staticmethod
+    def check_key(key: str) -> None:
+        """Reject keys that could escape the root: syntactic only, no filesystem access."""
         if (
             not key
             or ".." in key
@@ -29,6 +30,11 @@ class LocalStorage:
             or PureWindowsPath(key).drive
         ):
             raise InvalidStorageKeyError(f"Invalid storage key: {key!r}")
+
+    def path_for(self, key: str) -> Path:
+        """Map a key to a path under root, rejecting anything that could escape it (including
+        through symlinks: the real path is resolved, so use this for file operations only)."""
+        self.check_key(key)
         path = (self.root / key).resolve()
         if path == self.root or not path.is_relative_to(self.root):
             raise InvalidStorageKeyError(f"Storage key resolves outside MEDIA_ROOT: {key!r}")
@@ -50,7 +56,9 @@ class LocalStorage:
         return await anyio.to_thread.run_sync(self._is_writable)
 
     def url(self, key: str) -> str:
-        self.path_for(key)
+        # Built for every image in every response: no filesystem access here (resolving the
+        # real path cost ~1 ms per URL on Windows and dominated cached catalog responses).
+        self.check_key(key)
         return f"{self.base_url}/{key}"
 
     @staticmethod

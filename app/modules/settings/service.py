@@ -1,6 +1,10 @@
 """Store settings with typed defaults. The ONLY place settings are read.
 
 A key missing in store_settings (or holding an invalid value) falls back to its default.
+
+load_limits() and load_notification_settings() keep a per-process copy for 60 s
+(app.core.local_cache): settings are read on many requests and change rarely (seed_base / SQL).
+Pass fresh=True where a stale value must never be used.
 """
 
 import json
@@ -12,6 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import ScalarSelect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.local_cache import local_cache
 from app.modules.settings.models import StoreSetting
 
 
@@ -46,9 +51,14 @@ def limits_from_values(values: dict[str, Any]) -> StoreLimits:
     return StoreLimits(**{key: parse_int_setting(values.get(key), key) for key in LIMIT_KEYS})
 
 
-async def load_limits(session: AsyncSession) -> StoreLimits:
+async def load_limits(session: AsyncSession, *, fresh: bool = False) -> StoreLimits:
+    cached: StoreLimits | None = None if fresh else local_cache.get("store_limits")
+    if cached is not None:
+        return cached
     rows = await session.execute(select(StoreSetting.key, StoreSetting.value).where(StoreSetting.key.in_(LIMIT_KEYS)))
-    return limits_from_values({key: value for key, value in rows.all()})
+    limits = limits_from_values({key: value for key, value in rows.all()})
+    local_cache.put("store_limits", limits)
+    return limits
 
 
 def setting_subquery(key: str) -> ScalarSelect[Any]:
@@ -133,8 +143,13 @@ def notification_settings_from(values: dict[str, Any]) -> NotificationSettings:
     )
 
 
-async def load_notification_settings(session: AsyncSession) -> NotificationSettings:
+async def load_notification_settings(session: AsyncSession, *, fresh: bool = False) -> NotificationSettings:
+    cached: NotificationSettings | None = None if fresh else local_cache.get("notification_settings")
+    if cached is not None:
+        return cached
     rows = await session.execute(
         select(StoreSetting.key, StoreSetting.value).where(StoreSetting.key.in_(NOTIFICATION_KEYS))
     )
-    return notification_settings_from({key: value for key, value in rows.all()})
+    result = notification_settings_from({key: value for key, value in rows.all()})
+    local_cache.put("notification_settings", result)
+    return result

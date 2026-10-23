@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.storage.transaction import MediaTransaction
+from app.shared.events import commit_and_publish
 from app.modules.categories import repository as repo
 from app.modules.categories.definitions import (
     EffectiveDefinitions,
@@ -150,7 +151,7 @@ class AdminCategoryService:
         )
         self.session.add(category)
         await flush_catalog(self.session)
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return await self.detail(category.id)
 
     async def update(self, category_id: int, data: CategoryUpdate) -> AdminCategoryDetail:
@@ -179,7 +180,7 @@ class AdminCategoryService:
         if renamed:
             subtree = [category.id, *await repo.child_ids(self.session, category.id)]
             await refresh_search_text(self.session, await repo.product_ids_in(self.session, subtree))
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return await self.detail(category.id)
 
     async def delete(self, category_id: int) -> None:
@@ -245,7 +246,7 @@ class AdminCategoryService:
         attribute = CategoryAttribute(category_id=category.id, **data.model_dump())
         self.session.add(attribute)
         await flush_catalog(self.session)
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return AdminAttributeOut.model_validate(attribute)
 
     async def update_attribute(self, category_id: int, attribute_id: int, data: AttributeUpdate) -> AdminAttributeOut:
@@ -276,7 +277,7 @@ class AdminCategoryService:
         attribute.type = new_type
         attribute.options = new_options
         await flush_catalog(self.session)
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return AdminAttributeOut.model_validate(attribute)
 
     async def delete_attribute(self, category_id: int, attribute_id: int, force: bool) -> None:
@@ -292,7 +293,7 @@ class AdminCategoryService:
         await self.session.flush()
         if used:
             await refresh_search_text(self.session, used)
-        await self.session.commit()
+        await commit_and_publish(self.session)
 
     async def _attribute(self, category_id: int, attribute_id: int) -> CategoryAttribute:
         attribute = await repo.get_attribute(self.session, category_id, attribute_id)
@@ -312,7 +313,7 @@ class AdminCategoryService:
         option = CategoryVariantOption(category_id=category.id, **data.model_dump())
         self.session.add(option)
         await flush_catalog(self.session)
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return AdminVariantOptionOut.model_validate(option)
 
     async def update_variant_option(
@@ -346,7 +347,7 @@ class AdminCategoryService:
         option.type = new_type
         option.options = new_options
         await flush_catalog(self.session)
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return AdminVariantOptionOut.model_validate(option)
 
     async def _check_used_values_allowed(self, tree: list[int], key: str, allowed: Sequence[str]) -> None:
@@ -368,7 +369,7 @@ class AdminCategoryService:
         if count:
             raise Conflict(ErrorCode.VARIANT_OPTION_IN_USE, details={"key": option.key, "variants_count": count})
         await self.session.delete(option)
-        await self.session.commit()
+        await commit_and_publish(self.session)
 
     async def _variant_option(self, category_id: int, option_id: int) -> CategoryVariantOption:
         option = await repo.get_variant_option(self.session, category_id, option_id)

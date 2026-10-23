@@ -73,6 +73,9 @@ async def set_setting(session: AsyncSession, key: str, value: int) -> None:
     else:
         existing.value = value
     await session.commit()
+    from conftest import bump_catalog
+
+    await bump_catalog()  # direct SQL: what a settings change must trigger (cache + per-process copy)
 
 
 async def add(client: AsyncClient, headers: dict[str, str], product_id: int, variant_id: int | None = None, quantity: int = 1) -> Any:

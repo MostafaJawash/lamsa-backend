@@ -1,12 +1,14 @@
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
+from pydantic import TypeAdapter
 
 from app.modules.products.catalog_service import CatalogProductService, ListQuery
 from app.modules.products.schemas import FacetsOut, ProductCardOut, ProductDetailOut, ProductSort
 from app.shared.dependencies.auth import DbSession, OptionalUser
-from app.shared.dependencies.pagination import Page, PageParamsDep
+from app.shared.dependencies.pagination import DEFAULT_PAGE_SIZE, Page, PageParamsDep
+from app.shared.http_cache import favorites_overlay, normalized_query, query_hash, serve_cached
 
 router = APIRouter(prefix="/products", tags=["catalog"])
 
@@ -44,32 +46,51 @@ def list_query(
 
 ListQueryDep = Annotated[ListQuery, Depends(list_query)]
 
+# Cached: the anonymous body (is_favorite overlaid per user), see app/shared/http_cache.py.
+PAGE_ADAPTER: TypeAdapter[Page[ProductCardOut]] = TypeAdapter(Page[ProductCardOut])
+FACETS_ADAPTER: TypeAdapter[FacetsOut] = TypeAdapter(FacetsOut)
+DETAIL_ADAPTER: TypeAdapter[ProductDetailOut] = TypeAdapter(ProductDetailOut)
+CARDS_ADAPTER: TypeAdapter[list[ProductCardOut]] = TypeAdapter(list[ProductCardOut])
+PAGING_DEFAULTS = {"page": "1", "page_size": str(DEFAULT_PAGE_SIZE)}
+
 
 @router.get("", response_model=Page[ProductCardOut], description=FILTERS_DOC)
 async def list_products(
+    request: Request,
     query: ListQueryDep,
     params: PageParamsDep,
     service: Service,
     user: OptionalUser,
     sort: Annotated[ProductSort | None, Query(description="Default: relevance with q, else newest")] = None,
-) -> Page[ProductCardOut]:
-    return await service.list(query, sort, params, user.id if user else None)
+) -> Response:
+    key = query_hash(normalized_query(query.params, paging=True, defaults=PAGING_DEFAULTS))
+    return await serve_cached(
+        request, "products", [key], PAGE_ADAPTER, lambda: service.list(query, sort, params),
+        overlay=favorites_overlay(service.session, user.id if user else None, "page"),
+    )
 
 
 @router.get("/facets", response_model=FacetsOut, description=FILTERS_DOC)
-async def product_facets(query: ListQueryDep, service: Service) -> FacetsOut:
+async def product_facets(request: Request, query: ListQueryDep, service: Service) -> Response:
     """Counts for the filter UI. Each facet ignores its own filter. Attribute and option facets
     need a category."""
-    return await service.facets(query)
+    key = query_hash(normalized_query(query.params, paging=False))
+    return await serve_cached(request, "facets", [key], FACETS_ADAPTER, lambda: service.facets(query))
 
 
 @router.get("/{slug}", response_model=ProductDetailOut)
-async def get_product(slug: str, service: Service, user: OptionalUser) -> ProductDetailOut:
-    return await service.detail(slug, user.id if user else None)
+async def get_product(request: Request, slug: str, service: Service, user: OptionalUser) -> Response:
+    return await serve_cached(
+        request, "product", [slug], DETAIL_ADAPTER, lambda: service.detail(slug), product_slug=slug,
+        overlay=favorites_overlay(service.session, user.id if user else None, "one"),
+    )
 
 
 @router.get("/{slug}/related", response_model=list[ProductCardOut])
 async def related_products(
-    slug: str, service: Service, user: OptionalUser, limit: Annotated[int, Query(ge=1, le=12)] = 8
-) -> list[ProductCardOut]:
-    return await service.related(slug, limit, user.id if user else None)
+    request: Request, slug: str, service: Service, user: OptionalUser, limit: Annotated[int, Query(ge=1, le=12)] = 8
+) -> Response:
+    return await serve_cached(
+        request, "related", [slug, str(limit)], CARDS_ADAPTER, lambda: service.related(slug, limit),
+        overlay=favorites_overlay(service.session, user.id if user else None, "list"),
+    )

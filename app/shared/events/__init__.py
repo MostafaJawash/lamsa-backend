@@ -97,6 +97,20 @@ class ProductPriceDropped(DomainEvent):
     sale_started: bool
 
 
+@dataclass(frozen=True)
+class CatalogChanged(DomainEvent):
+    """An admin changed something customers see (categories, definitions, brands, products,
+    variants, bundle items, images, banners). Bumps the global catalog cache version."""
+
+
+@dataclass(frozen=True)
+class ProductsChanged(DomainEvent):
+    """These products' summary or stock may have changed (orders, cancellations, stock adjusts,
+    edits). Bumps their product-detail cache versions."""
+
+    slugs: tuple[str, ...]
+
+
 Handler = Callable[[DomainEvent], Awaitable[None]]
 _handlers: list[tuple[type[DomainEvent], Handler]] = []
 
@@ -169,6 +183,7 @@ async def log_event(event: DomainEvent) -> None:
 subscribe(DomainEvent, log_event)
 
 __all__ = [
+    "CatalogChanged",
     "DomainEvent",
     "EventBuffer",
     "OrderCancelled",
@@ -176,6 +191,7 @@ __all__ = [
     "OrderStatusChanged",
     "ProductBackInStock",
     "ProductPriceDropped",
+    "ProductsChanged",
     "StockLow",
     "StockOut",
     "commit_and_publish",

@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from cart_fixtures import ADMIN, CART, add, build_shop, cart, line_for, set_setting
 from catalog_helpers import code_of, ok
-from conftest import bearer, register
+from conftest import bump_catalog, bearer, register
 
 pytestmark = pytest.mark.anyio
 
@@ -187,6 +187,7 @@ async def test_live_prices_and_delivery_quotes(client: AsyncClient, admin_header
 
     await db_session.execute(update(DeliveryMethod).where(DeliveryMethod.code == "express").values(is_active=False))
     await db_session.commit()
+    await bump_catalog()  # direct SQL: what an admin change would trigger
     assert [q["code"] for q in (await cart(client, customer_headers))["delivery_quotes"]] == ["home", "pickup"]
 
 

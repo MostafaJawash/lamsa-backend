@@ -1,15 +1,18 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile, status
+from pydantic import TypeAdapter
 
 from app.modules.brands.schemas import AdminBrandOut, BrandCreate, BrandOut, BrandUpdate
 from app.modules.brands.service import AdminBrandService, BrandCatalogService
+from app.shared.catalog_cache import catalog_write
+from app.shared.http_cache import serve_cached
 from app.shared.dependencies.auth import AdminUser, DbSession
 from app.shared.dependencies.pagination import Page, PageParamsDep
 from app.shared.utils.uploads import limit_upload_body, read_upload
 
 router = APIRouter(prefix="/brands", tags=["catalog"])
-admin_router = APIRouter(prefix="/admin/brands", tags=["admin-catalog"])
+admin_router = APIRouter(prefix="/admin/brands", tags=["admin-catalog"], dependencies=[Depends(catalog_write)])
 
 
 def get_catalog_service(session: DbSession) -> BrandCatalogService:
@@ -24,17 +27,22 @@ Catalog = Annotated[BrandCatalogService, Depends(get_catalog_service)]
 Admin = Annotated[AdminBrandService, Depends(get_admin_service)]
 
 
+LIST_ADAPTER: TypeAdapter[list[BrandOut]] = TypeAdapter(list[BrandOut])
+BRAND_ADAPTER: TypeAdapter[BrandOut] = TypeAdapter(BrandOut)
+
+
 @router.get("", response_model=list[BrandOut])
 async def list_brands(
+    request: Request,
     service: Catalog,
     category: Annotated[str | None, Query(description="Category slug: only brands with products there")] = None,
-) -> list[BrandOut]:
-    return await service.list(category)
+) -> Response:
+    return await serve_cached(request, "brands", [category or "-"], LIST_ADAPTER, lambda: service.list(category))
 
 
 @router.get("/{slug}", response_model=BrandOut)
-async def get_brand(slug: str, service: Catalog) -> BrandOut:
-    return await service.detail(slug)
+async def get_brand(request: Request, slug: str, service: Catalog) -> Response:
+    return await serve_cached(request, "brand", [slug], BRAND_ADAPTER, lambda: service.detail(slug))
 
 
 @admin_router.get("", response_model=Page[AdminBrandOut])

@@ -157,7 +157,10 @@ class OrderService:
     def __init__(self, session: AsyncSession, user: User) -> None:
         self.session = session
         self.user = user
-        self.user_id = user.id  # plain int: a retry's rollback expires ORM objects
+        # Plain values: a retry's rollback expires ORM objects (reading them then would be I/O).
+        self.user_id = user.id
+        self.user_name = user.name
+        self.user_phone = user.phone
         self.events = EventBuffer()
 
     # ------------------------------------------------------------------- placing
@@ -235,9 +238,8 @@ class OrderService:
 
         # 8-10. The order, its items and the first history row (snapshots).
         now = clock.utcnow()
-        user = self.user
         order = Order(
-            user_id=self.user_id, customer_name=user.name, customer_phone=user.phone,
+            user_id=self.user_id, customer_name=self.user_name, customer_phone=self.user_phone,
             shipping_address={
                 "label": address.label, "city": address.city, "street": address.street,
                 "building": address.building, "notes": address.notes,

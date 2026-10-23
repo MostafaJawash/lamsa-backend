@@ -2,6 +2,7 @@
 the event handlers (measured; the numbers are reported in the README)."""
 
 from collections.abc import Iterator
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -16,11 +17,12 @@ from app.modules.notifications.enums import NotificationType
 from app.modules.notifications.links import Link
 from app.modules.notifications.models import Notification
 from app.modules.notifications.outbox import Draft, add_drafts
+from app.core.local_cache import local_cache
 from app.shared import events
 from app.shared.enums import LinkType
 from cart_fixtures import FAVORITES, build_shop
 from catalog_helpers import ADMIN, ok, png
-from conftest import bearer, register
+from conftest import FakeClock, bearer, register
 from notification_helpers import ADMIN_BANNERS, ADMIN_NOTIFICATIONS, BANNERS, NOTIFICATIONS, add_device, me, rows
 
 pytestmark = pytest.mark.anyio
@@ -55,13 +57,18 @@ async def test_no_product_events_or_notifications_when_the_commit_fails(
     assert (await client.put(f"{FAVORITES}/{cream}", headers=fan)).status_code == 204
     adjust = f"{ADMIN}/products/{cream}/stock-adjust"
     ok(await client.post(adjust, json={"delta": -5}, headers=admin_headers))
-    assert [type(e).__name__ for e in recorded] == ["StockOut"]
+    assert [type(e).__name__ for e in recorded if not isinstance(e, (events.CatalogChanged, events.ProductsChanged))] == ["StockOut"]
+    assert {type(e).__name__ for e in recorded} == {"StockOut", "CatalogChanged", "ProductsChanged"}
     recorded.clear()
     before = len(await rows(db_session))
 
     async def failing_commit() -> None:
         raise RuntimeError("commit failed")
 
+    async def no_release(session: object) -> None:  # authentication must not commit first
+        return None
+
+    monkeypatch.setattr("app.shared.dependencies.auth.release_read_transaction", no_release)
     monkeypatch.setattr(db_session, "commit", failing_commit)
     # Back in stock (ProductBackInStock stashed) and a price drop: both rolled back.
     assert (await client.post(adjust, json={"delta": 3}, headers=admin_headers)).status_code == 500
@@ -89,6 +96,10 @@ async def test_failed_commit_drops_buffered_and_stashed_events(db_session: Async
     async def failing_commit() -> None:
         raise RuntimeError("commit failed")
 
+    async def no_release(session: object) -> None:  # authentication must not commit first
+        return None
+
+    monkeypatch.setattr("app.shared.dependencies.auth.release_read_transaction", no_release)
     monkeypatch.setattr(db_session, "commit", failing_commit)
     with pytest.raises(RuntimeError):
         await events.commit_and_publish(db_session, buffer)
@@ -103,8 +114,9 @@ async def test_failed_commit_drops_buffered_and_stashed_events(db_session: Async
 
 async def test_read_budgets(
     client: AsyncClient, admin_headers: dict, customer_headers: dict, shop: dict, db_session: AsyncSession,
-    count_queries: Any,
+    count_queries: Any, frozen_clock: FakeClock,
 ) -> None:
+    frozen_clock.now = datetime(2026, 7, 1, 10, 0)  # noon in Berlin: marketing is not held back
     customer = await me(client, customer_headers)
     cream = shop["simple"]
     await add_drafts(db_session, [
@@ -168,6 +180,7 @@ async def test_handler_statement_counts(
     measured: dict[str, int] = {}
     for name, event in cases:
         before = len(await rows(db_session))
+        local_cache.clear()  # cold per-process settings copy: worst case, comparable over time
         with count_queries() as counter:
             await by_event[type(event)](event)
         measured[name] = len(counter.pipeline)

@@ -66,6 +66,20 @@ def insufficient_stock(product_id: int, variant_id: int | None, available: int) 
     )
 
 
+class ServiceBusy(AppError):
+    """503 SERVICE_BUSY with Retry-After: overloaded right now (password hashing queue full,
+    database pool exhausted). The app should wait Retry-After seconds and retry once."""
+
+    default_status = 503
+
+    def __init__(self, retry_after: int = 2, details: Any = None) -> None:
+        self.retry_after = max(1, int(retry_after))
+        super().__init__(
+            "SERVICE_BUSY", details={"retry_after": self.retry_after, **(details or {})},
+            headers={"Retry-After": str(self.retry_after)},
+        )
+
+
 class TooManyRequests(AppError):
     default_status = 429
 

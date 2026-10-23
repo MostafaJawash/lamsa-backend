@@ -6,10 +6,10 @@ import math
 import random
 from datetime import datetime, timedelta
 
-import anyio
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.session import release_read_transaction
 from app.core import clock, security
 from app.core.config import settings
 from app.integrations.google import auth as google_auth
@@ -76,12 +76,23 @@ async def flush_user_changes(session: AsyncSession) -> None:
         raise conflict from exc
 
 
-async def hash_password_async(password: str) -> str:
-    return await anyio.to_thread.run_sync(security.hash_password, password)
+async def release_connection(session: AsyncSession | None) -> None:
+    """Free the pooled connection while the request queues for (and spends ~40 ms in) password
+    hashing: otherwise a login burst holds every connection and unrelated requests time out."""
+    await release_read_transaction(session)
 
 
-async def verify_password_async(password: str, password_hash: str) -> tuple[bool, str | None]:
-    return await anyio.to_thread.run_sync(security.verify_password, password, password_hash)
+async def hash_password_async(password: str, *, release: AsyncSession | None = None) -> str:
+    """Limited and threaded (see security._limited). release: see release_connection()."""
+    await release_connection(release)
+    return await security.hash_password_async(password)
+
+
+async def verify_password_async(
+    password: str, password_hash: str, *, release: AsyncSession | None = None
+) -> tuple[bool, str | None]:
+    await release_connection(release)
+    return await security.verify_password_async(password, password_hash)
 
 
 async def issue_tokens(
@@ -134,7 +145,7 @@ class AuthService:
             name=data.name,
             phone=phone,
             auth_provider=AuthProvider.phone,
-            password_hash=await hash_password_async(data.password),
+            password_hash=await hash_password_async(data.password, release=self.session),
             last_login_at=now,
         )
         self.session.add(user)
@@ -169,11 +180,12 @@ class AuthService:
         user = await users_repo.get_user_by_phone(self.session, phone)
         new_hash: str | None = None
         if user is not None and user.password_hash:
-            valid, new_hash = await verify_password_async(data.password, user.password_hash)
+            valid, new_hash = await verify_password_async(data.password, user.password_hash, release=self.session)
         else:
-            # Same cost as a real check, so response time does not reveal unknown phones
-            # or Google accounts.
-            await anyio.to_thread.run_sync(security.verify_dummy_password, data.password)
+            # Same cost (and the same queue) as a real check, so response time does not reveal
+            # unknown phones or Google accounts.
+            await release_connection(self.session)
+            await security.verify_dummy_password_async(data.password)
             valid = False
 
         if not valid or user is None:
@@ -331,16 +343,16 @@ class AuthService:
         user = context.user
         if user.auth_provider != AuthProvider.phone or not user.password_hash:
             raise ValidationFailed(ErrorCode.NOT_A_PASSWORD_ACCOUNT)
-        valid, _ = await verify_password_async(data.current_password, user.password_hash)
+        valid, _ = await verify_password_async(data.current_password, user.password_hash, release=self.session)
         if not valid:
             raise Unauthorized(ErrorCode.INVALID_CREDENTIALS)
-        same, _ = await verify_password_async(data.new_password, user.password_hash)
+        same, _ = await verify_password_async(data.new_password, user.password_hash, release=self.session)
         if same:
             raise ValidationFailed(ErrorCode.SAME_PASSWORD)
         security.validate_password(data.new_password, user.phone)
 
         now = clock.utcnow()
-        user.password_hash = await hash_password_async(data.new_password)
+        user.password_hash = await hash_password_async(data.new_password, release=self.session)
         user.must_change_password = False
 
         family_id = context.claims.family_id

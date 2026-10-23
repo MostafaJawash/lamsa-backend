@@ -22,11 +22,12 @@ from app.modules.products.schemas import (
     VariantUpdate,
 )
 from app.modules.products.service import MAX_FILES_PER_UPLOAD, AdminProductService
+from app.shared.catalog_cache import catalog_write
 from app.shared.dependencies.auth import AdminUser, DbSession
 from app.shared.dependencies.pagination import Page, PageParamsDep
 from app.shared.utils.uploads import limit_upload_body, read_upload
 
-router = APIRouter(prefix="/admin/products", tags=["admin-catalog"])
+router = APIRouter(prefix="/admin/products", tags=["admin-catalog"], dependencies=[Depends(catalog_write)])
 
 
 def get_service(session: DbSession, admin: AdminUser) -> AdminProductService:

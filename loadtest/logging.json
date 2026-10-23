@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {
+    "plain": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"}
+  },
+  "handlers": {
+    "stdout": {"class": "logging.StreamHandler", "formatter": "plain", "stream": "ext://sys.stdout"}
+  },
+  "loggers": {
+    "uvicorn": {"level": "INFO"},
+    "uvicorn.access": {"level": "WARNING"},
+    "app.integrations.firebase.push": {"level": "WARNING"}
+  },
+  "root": {"level": "INFO", "handlers": ["stdout"]}
+}

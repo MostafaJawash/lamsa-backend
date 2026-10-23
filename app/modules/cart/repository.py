@@ -16,6 +16,7 @@ from app.modules.products.enums import ProductType
 from app.modules.products.models import Product, ProductImage, ProductVariant
 from app.modules.products.presenters import LoadedImage
 from app.modules.products.visibility import visible_product_condition
+from app.core.local_cache import local_cache
 from app.modules.settings.service import StoreLimits, limit_columns, limits_from_row
 from app.modules.users.models import User
 
@@ -164,6 +165,18 @@ async def images_for(session: AsyncSession, product_ids: Sequence[int]) -> dict[
             LoadedImage(r.id, r.variant_id, r.image_key, r.alt_text, r.width, r.height, r.sort_order)
         )
     return result
+
+
+async def cached_delivery_methods(session: AsyncSession) -> tuple[list[DeliveryMethod], StoreLimits | None]:
+    """active_delivery_methods() with a per-process 60 s copy (app.core.local_cache), for cart
+    DISPLAY only. Checkout always calls active_delivery_methods() itself."""
+    cached: tuple[list[DeliveryMethod], StoreLimits | None] | None = local_cache.get("delivery_methods")
+    if cached is None:
+        cached = await active_delivery_methods(session)
+        for method in cached[0]:
+            session.expunge(method)  # shared between requests: never attached to one session
+        local_cache.put("delivery_methods", cached)
+    return cached
 
 
 async def active_delivery_methods(session: AsyncSession) -> tuple[list[DeliveryMethod], StoreLimits | None]:

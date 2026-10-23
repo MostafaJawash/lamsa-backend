@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.storage.transaction import MediaTransaction
+from app.shared.events import commit_and_publish
 from app.modules.brands import repository as repo
 from app.modules.brands.models import Brand
 from app.modules.brands.schemas import AdminBrandOut, BrandCreate, BrandOut, BrandUpdate
@@ -72,7 +73,7 @@ class AdminBrandService:
         brand = Brand(**data.model_dump(exclude={"slug"}), slug=slug)
         self.session.add(brand)
         await flush_catalog(self.session)
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return admin_brand_out(brand, 0)
 
     async def update(self, brand_id: int, data: BrandUpdate) -> AdminBrandOut:
@@ -89,7 +90,7 @@ class AdminBrandService:
         await flush_catalog(self.session)
         if renamed:
             await refresh_search_text(self.session, await repo.product_ids(self.session, brand.id))
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return await self.get(brand.id)
 
     async def delete(self, brand_id: int) -> None:

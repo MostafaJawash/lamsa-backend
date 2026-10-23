@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote_plus
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 MIN_JWT_SECRET_BYTES = 32
@@ -56,6 +56,30 @@ class Settings(BaseSettings):
     PUSH_BACKEND: str = "log"  # log | firebase
     FIREBASE_CREDENTIALS_PATH: Path | None = None
     RUN_WORKER_IN_APP: bool | None = None  # default: true only when APP_ENV=development
+
+    # Cache (Valkey, redis protocol). Optional at runtime: when it is down, requests bypass it.
+    CACHE_ENABLED: bool = True
+    CACHE_URL: str = "redis://127.0.0.1:6379/0"
+    CACHE_KEY_PREFIX: str = "lamsa:"
+    # Connect/read timeout per cache call. Not lower: on a busy asyncio worker the measured time
+    # includes event-loop lag, and a tight timeout would switch a healthy cache off exactly under
+    # load (measured in the load test). A dead server still fails at once (connection refused).
+    CACHE_TIMEOUT_MS: int = 1000
+
+    # Password hashing under load: at most this many hash/verify operations at once per process.
+    PASSWORD_HASH_CONCURRENCY: int = Field(default_factory=lambda: os.cpu_count() or 2, ge=1)
+    PASSWORD_HASH_QUEUE_TIMEOUT: float = 5.0  # seconds waiting for a slot before 503 SERVICE_BUSY
+
+    # Database pool. Keep workers x (DB_POOL_SIZE + DB_MAX_OVERFLOW) + worker process below
+    # MySQL max_connections (see README).
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT: float = 5.0  # seconds waiting for a connection before 503 SERVICE_BUSY
+    DB_POOL_RECYCLE: int = 3600
+
+    # Observability
+    SLOW_QUERY_MS: int = 200
+    SLOW_REQUEST_MS: int = 1000
 
     @field_validator("GOOGLE_CLIENT_IDS", "CORS_ORIGINS", mode="before")
     @classmethod

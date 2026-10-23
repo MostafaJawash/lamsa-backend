@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.shared.exceptions import MESSAGES, AppError, ErrorCode
@@ -73,8 +74,21 @@ async def handle_unexpected_error(request: Request, exc: Exception) -> JSONRespo
     )
 
 
+POOL_RETRY_AFTER = 2
+
+
+async def handle_pool_timeout(request: Request, exc: Exception) -> JSONResponse:
+    """The database pool stayed full for DB_POOL_TIMEOUT seconds: shed load with 503, not 500."""
+    logger.warning("Database pool exhausted on %s %s", request.method, request.url.path)
+    return error_response(
+        status.HTTP_503_SERVICE_UNAVAILABLE, ErrorCode.SERVICE_BUSY, MESSAGES[ErrorCode.SERVICE_BUSY],
+        {"retry_after": POOL_RETRY_AFTER}, {"Retry-After": str(POOL_RETRY_AFTER)},
+    )
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(AppError, handle_app_error)
+    app.add_exception_handler(PoolTimeoutError, handle_pool_timeout)
     app.add_exception_handler(RequestValidationError, handle_validation_error)
     app.add_exception_handler(StarletteHTTPException, handle_http_error)
     app.add_exception_handler(Exception, handle_unexpected_error)
