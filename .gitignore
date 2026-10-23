@@ -10,3 +10,4 @@ media/
 # Firebase service account and other credentials: never commit
 secrets/
 *firebase-adminsdk*.json
+.env.test

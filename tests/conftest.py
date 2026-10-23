@@ -1,7 +1,14 @@
 """Test setup.
 
-Safety: before anything from `app` is imported, DB_NAME is switched to TEST_DATABASE_NAME,
-and the run is refused unless that name ends in "_test". Tests never touch the lamsa database.
+Isolation from the developer's machine: the suite NEVER reads .env. Before anything from `app` is
+imported, Settings' dotenv loading is switched off (LAMSA_ENV_FILE="") and every setting that
+matters is set explicitly below; PUSH_BACKEND is forced to "log" (and tests install a fake sender),
+so no test can ever reach Firebase. Only the database connection comes from outside: the
+environment (CI) or the git-ignored .env.test (DB_HOST, DB_PORT, DB_USER, DB_PASSWORD,
+TEST_DATABASE_NAME; see .env.test.example).
+
+Safety: DB_NAME is switched to TEST_DATABASE_NAME, and the run is refused unless that name ends in
+"_test". Tests never touch the lamsa database.
 
 Database tests: migrations run once per session; every test runs inside one outer transaction
 that is rolled back at the end (services' commits become savepoint releases).
@@ -26,17 +33,40 @@ sys.path.insert(0, str(ROOT / "tests" / "catalog"))  # catalog_helpers, shared b
 sys.path.insert(0, str(ROOT / "tests" / "cart"))  # cart_fixtures
 sys.path.insert(0, str(ROOT / "tests" / "orders"))  # order_helpers
 sys.path.insert(0, str(ROOT / "tests" / "notifications"))  # notification_helpers
-_dotenv = dotenv_values(ROOT / ".env")
-TEST_DB = os.environ.get("TEST_DATABASE_NAME") or _dotenv.get("TEST_DATABASE_NAME") or "lamsa_test"
+
+# --- database connection: the environment wins, then .env.test (connection keys only) ---
+TEST_ENV_FILE = ROOT / ".env.test"
+CONNECTION_KEYS = ("DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "TEST_DATABASE_NAME")
+_test_env = dotenv_values(TEST_ENV_FILE) if TEST_ENV_FILE.is_file() else {}
+_unexpected = sorted(set(_test_env) - set(CONNECTION_KEYS))
+if _unexpected:
+    raise pytest.UsageError(f".env.test may only contain {', '.join(CONNECTION_KEYS)}; found {', '.join(_unexpected)}")
+for _key in CONNECTION_KEYS:
+    if not os.environ.get(_key) and _test_env.get(_key):
+        os.environ[_key] = str(_test_env[_key])
+for _key in ("DB_USER", "DB_PASSWORD"):
+    if not os.environ.get(_key):
+        raise pytest.UsageError(f"{_key} is not set: copy .env.test.example to .env.test (or set it in the environment)")
+TEST_DB = os.environ.get("TEST_DATABASE_NAME") or "lamsa_test"
 if not TEST_DB.endswith("_test"):
     raise pytest.UsageError(f"Refusing to run: TEST_DATABASE_NAME={TEST_DB!r} must end with '_test'")
 
-os.environ["DB_NAME"] = TEST_DB
-os.environ["APP_ENV"] = "test"
-os.environ["DEBUG"] = "false"
-os.environ["GOOGLE_DEV_MODE"] = "false"
-os.environ["TRUST_PROXY_HEADERS"] = "false"
-os.environ["JWT_SECRET"] = "test-only-secret-" + "x" * 48
+# --- everything else is fixed here, whatever the developer's .env or shell says ---
+os.environ["LAMSA_ENV_FILE"] = ""  # Settings reads no dotenv file at all
+TEST_SETTINGS = {
+    "DB_NAME": TEST_DB,
+    "APP_ENV": "test",
+    "DEBUG": "false",
+    "JWT_SECRET": "test-only-secret-" + "x" * 48,
+    "GOOGLE_DEV_MODE": "false",
+    "GOOGLE_CLIENT_IDS": "",
+    "TRUST_PROXY_HEADERS": "false",
+    "STORAGE_BACKEND": "local",
+    "PUSH_BACKEND": "log",  # never Firebase
+    "RUN_WORKER_IN_APP": "false",
+}
+os.environ.update(TEST_SETTINGS)
+os.environ.pop("FIREBASE_CREDENTIALS_PATH", None)
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from pwdlib import PasswordHash  # noqa: E402
@@ -59,6 +89,8 @@ from app.modules.users.models import User  # noqa: E402
 from app.shared.exceptions import ErrorCode, Unauthorized  # noqa: E402
 
 assert settings.DB_NAME == TEST_DB and settings.DB_NAME.endswith("_test"), "tests must use the test database"
+assert settings.model_config.get("env_file") is None, "tests must never read a .env file"
+assert settings.PUSH_BACKEND == "log" and settings.FIREBASE_CREDENTIALS_PATH is None, "tests must never use Firebase"
 
 DEFAULT_IP = "10.0.0.1"
 PASSWORD = "Secret-pass1"

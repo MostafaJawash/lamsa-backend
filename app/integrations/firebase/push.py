@@ -5,6 +5,7 @@ through FCM (the settings refuse to start without a readable FIREBASE_CREDENTIAL
 """
 
 import logging
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -89,26 +90,40 @@ class FirebasePushSender:
         results: list[PushResult] = []
         for start in range(0, len(messages), FCM_BATCH_SIZE):
             chunk = list(messages[start : start + FCM_BATCH_SIZE])
-            # The SDK is blocking: run it in a worker thread.
-            results.extend(await anyio.to_thread.run_sync(self._send_chunk, chunk))
+            # Built here, on the event loop thread: fcm_message() briefly changes the global warning
+            # filters, which is not thread-safe. Only the blocking send runs in a worker thread.
+            fcm_messages = [fcm_message(m) for m in chunk]
+            results.extend(await anyio.to_thread.run_sync(self._send_chunk, chunk, fcm_messages))
         return results
 
-    def _send_chunk(self, chunk: list[PushMessage]) -> list[PushResult]:
+    def _send_chunk(self, chunk: list[PushMessage], fcm_messages: list[Any]) -> list[PushResult]:
         from firebase_admin import messaging
 
-        app = self._ensure_app()
-        fcm_messages = [
-            messaging.Message(
-                token=m.token,
-                notification=messaging.Notification(title=m.title, body=m.body),
-                data=m.data,
-                android=messaging.AndroidConfig(notification=messaging.AndroidNotification(channel_id=m.channel)),
-                apns=messaging.APNSConfig(payload=messaging.APNSPayload(aps=messaging.Aps(sound="default", badge=m.badge))),
-            )
-            for m in chunk
-        ]
-        response = messaging.send_each(fcm_messages, app=app)
+        response = messaging.send_each(fcm_messages, app=self._ensure_app())
         return [_result(m.token, r) for m, r in zip(chunk, response.responses, strict=True)]
+
+
+# firebase-admin 7.5+ deprecates Message.token in favour of Message.fid (Firebase Installation ID).
+# We keep `token` on purpose: the app registers with getToken() registration tokens, which `fid` is
+# not documented to accept, while "during the migration period, the token field also accepts FIDs":
+# https://firebase.google.com/docs/cloud-messaging/send/admin-sdk
+# So only this exact warning is silenced, only while the Message is built. The migration plan is
+# in the README ("FCM registration tokens and FIDs").
+TOKEN_DEPRECATION = r"Message\.token is deprecated\. Use Message\.fid instead\."
+
+
+def fcm_message(m: PushMessage) -> Any:
+    from firebase_admin import messaging
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=TOKEN_DEPRECATION, category=DeprecationWarning)
+        return messaging.Message(
+            token=m.token,
+            notification=messaging.Notification(title=m.title, body=m.body),
+            data=m.data,
+            android=messaging.AndroidConfig(notification=messaging.AndroidNotification(channel_id=m.channel)),
+            apns=messaging.APNSConfig(payload=messaging.APNSPayload(aps=messaging.Aps(sound="default", badge=m.badge))),
+        )
 
 
 def _result(token: str, response: Any) -> PushResult:

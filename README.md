@@ -14,6 +14,7 @@ Backend for the Lamsa store: FastAPI, async SQLAlchemy 2 on MySQL, Alembic migra
 python -m venv venv
 .\venv\Scripts\python.exe -m pip install -r requirements.txt
 copy .env.example .env    # then set DB_PASSWORD and JWT_SECRET
+copy .env.test.example .env.test    # the tests' database connection; set DB_PASSWORD
 .\venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(48))"   # JWT_SECRET
 ```
 
@@ -35,7 +36,7 @@ FLUSH PRIVILEGES;
 | `APP_ENV` | `development` | `/media` is served by the app only in `development` |
 | `DEBUG` | `true` | echoes SQL |
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | | MySQL connection |
-| `TEST_DATABASE_NAME` | `lamsa_test` | used by the tests; must end in `_test` |
+| `TEST_DATABASE_NAME` | `lamsa_test` | the tests' database, set in `.env.test` (see *Tests*); must end in `_test` |
 | `STORAGE_BACKEND` | `local` | only `local` for now |
 | `MEDIA_ROOT` | `./media` | where image files are written |
 | `MEDIA_URL` | `http://127.0.0.1:8000/media` | public base URL for `MEDIA_ROOT` |
@@ -86,6 +87,7 @@ Create the first admin with one of these. The password is asked interactively an
 .\venv\Scripts\python.exe -m pytest -q
 ```
 
+- **The tests never read `.env`.** `tests/conftest.py` turns off Settings' dotenv loading (`LAMSA_ENV_FILE=""`) before importing the app and sets every setting that matters itself. For example, `PUSH_BACKEND=log` is forced, so no test can reach Firebase, whatever your `.env` says. A guard test (`tests/core/test_test_isolation.py`) fails if that ever changes. Only the database connection comes from outside: environment variables (CI) or the git-ignored `.env.test` (copy `.env.test.example`). That file may only contain `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD` and `TEST_DATABASE_NAME`.
 - Database tests use `TEST_DATABASE_NAME` (`lamsa_test`), never `lamsa`. `tests/conftest.py` switches `DB_NAME` before importing the app and **refuses to run unless the name ends in `_test`**.
 - Migrations run once per session. Each test runs in one transaction that is rolled back, so nothing is left behind.
 - Google is always mocked, and the tests never call it.
@@ -646,6 +648,19 @@ In production, run it as its own process. It stops gracefully on SIGTERM:
 4. Sign in to the admin app on a phone and call `POST /admin/notifications/test`.
 
 With `PUSH_BACKEND=log` (the default), pushes are only written to the log. Use it for development without Firebase. Tests always use a fake sender.
+
+### FCM registration tokens and FIDs
+
+**Pin:** `firebase-admin` is pinned at **7.7.0** (`requirements.txt`). Before any upgrade, and especially to 8.x, re-check the `token` / `fid` situation below. A major version may remove `Message.token`.
+
+**Why we still send with `token`:** Since firebase-admin 7.5.0, `Message.token` is deprecated in favor of `Message.fid`, the Firebase Installation ID. FCM is moving from registration tokens (the value `getToken()` returns) to FIDs. An FID is a different identifier, so `fid` is **not** a drop-in replacement for the registration tokens apps send today. During FCM's migration period, though, ["the `token` field also accepts FIDs"](https://firebase.google.com/docs/cloud-messaging/send/admin-sdk). So `token` works for every client, whether it registered with a token or an FID. The backend uses `token` and silences only that one deprecation warning, only where the message is built (`app/integrations/firebase/push.py`). The error codes we rely on (`UNREGISTERED`, `INVALID_ARGUMENT`, `SENDER_ID_MISMATCH`) are unchanged and apply to FIDs too.
+
+**Migration plan (no schema change):**
+1. The app registers with FIDs and sends the FID to `POST /users/me/devices` in the same `fcm_token` field. The column holds up to 512 characters, and an FID is much shorter.
+2. Once every active client sends FIDs (or before `token` is removed, whichever comes first), change the one line in `fcm_message()` from `token=m.token` to `fid=m.token` and remove the warning filter.
+
+**For the app developers:** the app isn't built yet, so you may register with FIDs from day one, if your Firebase SDK supports FID registration as a **stable** (not beta) feature. Don't mix the token and FID registration APIs in one app. The backend accepts both today through the `token` field, so nothing else changes. If you do use FIDs, tell the backend team; we switch to `fid=` once that is confirmed in production.
+
 
 ## Admin catalog workflow
 

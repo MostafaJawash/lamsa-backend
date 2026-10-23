@@ -11,10 +11,14 @@ MIN_JWT_SECRET_BYTES = 32
 
 CommaList = Annotated[list[str], NoDecode]
 
+# The dotenv file Settings reads (default .env). LAMSA_ENV_FILE="" disables it: the test suite
+# sets that before importing the app, so it never reads a developer's .env.
+ENV_FILE: str | None = os.environ.get("LAMSA_ENV_FILE", ".env") or None
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
     )

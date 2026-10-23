@@ -2,6 +2,7 @@
 
 from datetime import datetime, time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -18,6 +19,11 @@ from app.modules.settings.service import NotificationSettings, notification_sett
 from app.shared.enums import LinkType
 
 S = NotificationSettings()
+
+
+def make_settings(**values: Any) -> Settings:
+    """A Settings built from these values and the test environment only (never a .env file)."""
+    return Settings(_env_file=None, **values)  # type: ignore[call-arg]
 
 
 # --------------------------------------------------------------------------------- texts
@@ -190,17 +196,38 @@ async def test_log_backend_reports_success() -> None:
 
 def test_firebase_backend_needs_credentials(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="FIREBASE_CREDENTIALS_PATH"):
-        Settings(PUSH_BACKEND="firebase")
+        make_settings(PUSH_BACKEND="firebase")
     with pytest.raises(ValidationError, match="FIREBASE_CREDENTIALS_PATH"):
-        Settings(PUSH_BACKEND="firebase", FIREBASE_CREDENTIALS_PATH=tmp_path / "missing.json")
+        make_settings(PUSH_BACKEND="firebase", FIREBASE_CREDENTIALS_PATH=tmp_path / "missing.json")
     with pytest.raises(ValidationError, match="PUSH_BACKEND"):
-        Settings(PUSH_BACKEND="carrier-pigeon")
+        make_settings(PUSH_BACKEND="carrier-pigeon")
     credentials = tmp_path / "service-account.json"
     credentials.write_text("{}", encoding="utf-8")
-    assert Settings(PUSH_BACKEND="firebase", FIREBASE_CREDENTIALS_PATH=credentials).PUSH_BACKEND == "firebase"
+    assert make_settings(PUSH_BACKEND="firebase", FIREBASE_CREDENTIALS_PATH=credentials).PUSH_BACKEND == "firebase"
 
 
 def test_worker_in_app_defaults_to_development_only() -> None:
-    assert Settings(APP_ENV="development").run_worker_in_app is True
-    assert Settings(APP_ENV="production").run_worker_in_app is False
-    assert Settings(APP_ENV="production", RUN_WORKER_IN_APP=True).run_worker_in_app is True
+    assert make_settings(APP_ENV="development", RUN_WORKER_IN_APP=None).run_worker_in_app is True
+    assert make_settings(APP_ENV="production", RUN_WORKER_IN_APP=None).run_worker_in_app is False
+    assert make_settings(APP_ENV="production", RUN_WORKER_IN_APP=True).run_worker_in_app is True
+
+
+def test_only_the_token_deprecation_is_silenced() -> None:
+    """fcm_message() hides exactly firebase-admin's Message.token warning, nothing else, and leaves
+    the global warning filters as they were."""
+    import warnings
+
+    filters_before = list(warnings.filters)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        message = push.fcm_message(push.PushMessage("tok", "t", "b", {"k": "v"}, "orders", 2))
+        warnings.warn("some other deprecation", DeprecationWarning, stacklevel=1)
+    assert [str(w.message) for w in caught] == ["some other deprecation"]
+    assert message.token == "tok" and message.fid is None
+    assert message.android.notification.channel_id == "orders" and message.apns.payload.aps.badge == 2
+    assert list(warnings.filters) == filters_before
+
+    from firebase_admin import messaging
+
+    with pytest.warns(DeprecationWarning, match="Message.token is deprecated"):  # still raised elsewhere
+        messaging.Message(token="tok")
