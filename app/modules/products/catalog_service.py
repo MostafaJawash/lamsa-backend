@@ -14,6 +14,7 @@ from app.modules.categories.enums import AttributeType
 from app.modules.categories.models import Category
 from app.modules.categories.schemas import CategoryRef
 from app.modules.categories.tree import CategoryIndex, load_category_index
+from app.modules.favorites.repository import favorite_ids_among
 from app.modules.products import repository as repo
 from app.modules.products.enums import ProductType
 from app.modules.products.filters import (
@@ -30,6 +31,7 @@ from app.modules.products.presenters import (
     attribute_values,
     build_card,
     image_colors,
+    price_info,
     stock_status,
     variant_image_ids,
     variant_option_values,
@@ -49,12 +51,10 @@ from app.modules.products.schemas import (
     ProductSort,
     VariantOut,
 )
-from app.modules.products.summary import BundleComponent, bundle_stock
 from app.modules.products.validation import variant_label
-from app.shared.catalog import parse_threshold
+from app.modules.settings.service import parse_int_setting
 from app.shared.dependencies.pagination import Page, PageParams
 from app.shared.exceptions import ErrorCode, NotFound
-from app.shared.money import discount_percent
 from app.shared.schemas import image_urls
 from app.shared.utils.search import build_boolean_query
 
@@ -121,7 +121,15 @@ class CatalogProductService:
 
     # ---------------------------------------------------------------------- list
 
-    async def list(self, query: ListQuery, sort: ProductSort | None, params: PageParams) -> Page[ProductCardOut]:
+    async def _favorites(self, user_id: int | None, product_ids: Sequence[int]) -> set[int]:
+        """At most ONE extra query, and only for a logged-in user."""
+        if user_id is None:
+            return set()
+        return await favorite_ids_among(self.session, user_id, product_ids)
+
+    async def list(
+        self, query: ListQuery, sort: ProductSort | None, params: PageParams, user_id: int | None = None
+    ) -> Page[ProductCardOut]:
         resolved = await self._resolve(query)
         if resolved.empty:
             return Page[ProductCardOut](items=[], page=params.page, page_size=params.page_size, total=0)
@@ -130,17 +138,22 @@ class CatalogProductService:
         rows, total = await repo.list_cards(self.session, filters, effective_sort, params.offset, params.page_size)
         if total is None:
             total = await repo.count_products(self.session, filters) if params.page > 1 else 0
+        favorites = await self._favorites(user_id, [r.id for r in rows])
         return Page[ProductCardOut](
-            items=await self._cards(rows), page=params.page, page_size=params.page_size, total=total
+            items=await self.cards(rows, favorites), page=params.page, page_size=params.page_size, total=total
         )
 
-    async def _cards(self, rows: Sequence[CardRow]) -> list[ProductCardOut]:
+    async def cards(self, rows: Sequence[CardRow], favorite_ids: set[int] | None = None) -> list[ProductCardOut]:
+        """THE card builder (catalog lists, related, favorites): two batched queries."""
         ids = [r.id for r in rows]
         images = await repo.main_image_keys(self.session, ids)
         variants = await repo.variants_of(
             self.session, [r.id for r in rows if r.type == ProductType.variable], active_only=True
         )
-        return [build_card(r, images.get(r.id), variants.get(r.id, [])) for r in rows]
+        cards = [build_card(r, images.get(r.id), variants.get(r.id, [])) for r in rows]
+        for card in cards:
+            card.is_favorite = card.id in (favorite_ids or set())
+        return cards
 
     # -------------------------------------------------------------------- facets
 
@@ -196,13 +209,13 @@ class CatalogProductService:
 
     # -------------------------------------------------------------------- detail
 
-    async def detail(self, slug: str) -> ProductDetailOut:
+    async def detail(self, slug: str, user_id: int | None = None) -> ProductDetailOut:
         index = await load_category_index(self.session)
         row = await repo.visible_product_by_slug(self.session, slug)
         if row is None:
             raise NotFound(ErrorCode.PRODUCT_NOT_FOUND)
         product, brand = row.product, row.brand
-        threshold = parse_threshold(row.threshold_raw)
+        threshold = parse_int_setting(row.threshold_raw, "low_stock_threshold")
         category = index.by_id[product.category_id]
         parent = index.parent(category)
         rows = await load_definition_rows(self.session, [category.id, *([parent.id] if parent else [])])
@@ -228,8 +241,8 @@ class CatalogProductService:
             images[0].image_key if images else None,
             active,
         )
-        color = definitions.color_option
-        colors = image_colors(images, all_variants, color)
+        color_key = definitions.color_option.key if definitions.color_option else None
+        colors = image_colors(images, all_variants, color_key)
         detail = ProductDetailOut(
             **card.model_dump(),
             description=product.description,
@@ -243,29 +256,28 @@ class CatalogProductService:
                 for i in images
             ],
         )
+        detail.is_favorite = bool(await self._favorites(user_id, [product.id]))
         if product.type == ProductType.variable:
             detail.variant_options = variant_option_values(definitions, active)
             detail.variants = []
             for v in active:
                 status, left = stock_status(v.stock, threshold)
+                prices = price_info(v.price, v.sale_price)
                 detail.variants.append(
                     VariantOut(
-                        id=v.id, options=v.options, price=v.price, sale_price=v.sale_price, current_price=v.current,
-                        discount_percent=discount_percent(v.price, v.current) if v.sale_price is not None else None,
+                        id=v.id, options=v.options, price=prices.regular, sale_price=v.sale_price,
+                        current_price=prices.current, discount_percent=prices.discount_percent,
                         stock_status=status, stock_left=left,
-                        image_ids=variant_image_ids(v, images, colors, color),
+                        image_ids=variant_image_ids(v, images, colors, color_key),
                     )
                 )
             return detail
 
-        stock = (
-            bundle_stock([BundleComponent(c.quantity, c.stock, c.active) for c in components])
-            if product.type == ProductType.bundle
-            else product.stock or 0
-        )
-        detail.regular_price = product.price
+        stock = repo.derived_bundle_stock(components) if product.type == ProductType.bundle else product.stock or 0
+        prices = price_info(product.price, product.sale_price)
+        detail.regular_price = prices.regular
         detail.sale_price = product.sale_price
-        detail.current_price = product.sale_price if product.sale_price is not None else product.price
+        detail.current_price = prices.current
         detail.stock_status, detail.stock_left = stock_status(stock, threshold)
         detail.items = [
             BundleItemOut(
@@ -281,7 +293,7 @@ class CatalogProductService:
 
     # ------------------------------------------------------------------- related
 
-    async def related(self, slug: str, limit: int) -> list[ProductCardOut]:
+    async def related(self, slug: str, limit: int, user_id: int | None = None) -> list[ProductCardOut]:
         index = await load_category_index(self.session)
         row = await repo.visible_product_by_slug(self.session, slug)
         if row is None:
@@ -294,4 +306,4 @@ class CatalogProductService:
             rows += await repo.related_cards(
                 self.session, index.subtree_ids(parent), [product.id, *(r.id for r in rows)], limit - len(rows)
             )
-        return await self._cards(rows)
+        return await self.cards(rows, await self._favorites(user_id, [r.id for r in rows]))

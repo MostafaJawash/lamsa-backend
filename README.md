@@ -220,7 +220,7 @@ Every error, including validation errors and unexpected ones, has this shape:
 | 404 | `CATEGORY_NOT_FOUND` | Unknown or hidden category (also an unknown `category` filter) |
 | 404 | `BRAND_NOT_FOUND` | Unknown or hidden brand |
 | 404 | `PRODUCT_NOT_FOUND` | Unknown or hidden product (hidden products are always 404, never 403) |
-| 404 / 422 | `VARIANT_NOT_FOUND` | Variant isn't part of the product; 422 when an image upload names a color that has no active variant |
+| 404 | `VARIANT_NOT_FOUND` | Variant isn't part of the product or isn't active (also an image upload by a color with no active variant) |
 | 404 | `IMAGE_NOT_FOUND` | Image isn't part of the product |
 | 404 | `ATTRIBUTE_NOT_FOUND` | Attribute or variant-option definition isn't part of the category |
 | 409 | `SLUG_TAKEN` | The explicit slug is used (or reserved: `facets`, `related`) |
@@ -251,6 +251,16 @@ Every error, including validation errors and unexpected ones, has this shape:
 | 413 | `FILE_TOO_LARGE` | Upload bigger than `MAX_UPLOAD_MB`, or an image over ~40 megapixels |
 | 422 | `INVALID_IMAGE` | Not a JPEG, PNG or WEBP image |
 | 422 | `INVALID_FILTER` | Unknown or non-filterable filter key, bad value for its type, or `min_price` > `max_price` (`details.param`) |
+| 404 | `CART_ITEM_NOT_FOUND` | The cart line doesn't exist or isn't yours |
+| 422 | `VARIANT_REQUIRED` | A variable product needs `variant_id` |
+| 422 | `VARIANT_NOT_ALLOWED` | A simple product or bundle takes no `variant_id` |
+| 422 | `QUANTITY_LIMIT_EXCEEDED` | More than `cart_max_quantity_per_line` of one item (`details.max`). Quantity 0 or less is `VALIDATION_ERROR` |
+| 409 | `INSUFFICIENT_STOCK` | Fewer in stock than the requested final quantity (`details.available`) |
+| 409 | `OUT_OF_STOCK` | Nothing in stock (also `move-to-cart` when no variant is in stock) |
+| 422 | `CART_LIMIT_REACHED` | More than `cart_max_lines` different lines (`details.max`) |
+| 422 | `FAVORITES_LIMIT_REACHED` | More than `favorites_max` favorites (`details.max`) |
+
+`OUT_OF_STOCK`, `INSUFFICIENT_STOCK` and `QUANTITY_LIMIT_EXCEEDED` are also used as cart **line issue** codes (same meaning, see below). `PRODUCT_NOT_FOUND` and `VARIANT_NOT_FOUND` (404) are reused by the cart for hidden products and missing or inactive variants.
 
 ---
 
@@ -344,6 +354,91 @@ Exact stock is never public. `stock_status` is one of:
 Search is Arabic-aware. Letter variants are folded on both the stored text and the query: أ إ آ ٱ → ا, ى → ي, ة → ه, tashkeel and tatweel are removed, and Arabic-Indic digits become 0–9. Search covers the name, description, brand, category, attribute values and variant option values.
 
 Every word must match. Operators and quotes are ignored, and words shorter than 2 letters are dropped. If nothing usable remains, the response is an empty page.
+
+### Favorites hearts on catalog screens
+
+`GET /products`, `GET /products/{slug}` and `GET /products/{slug}/related` accept an **optional** access token:
+- With a token, every card and the detail have `is_favorite` set for that user.
+- Without a token, `is_favorite` is always `false`.
+- A token that is sent but invalid or expired returns `401`, so refresh it and retry.
+- Browsing works even while `PASSWORD_CHANGE_REQUIRED` is pending; the gate doesn't apply to these public endpoints.
+
+## Cart and favorites for app developers
+
+All `/cart` and `/favorites` endpoints need a logged-in user, and the password-change gate applies.
+
+### Guests
+
+The API stores nothing for guests. Keep the guest cart and favorites **on the device**, and right after login or register send them once:
+
+- `POST /cart/merge {items: [{product_id, variant_id?, quantity}]}` (at most 100 items). It never fails because of one bad item. The response is the cart plus `merge_report: [{index, product_id, variant_id, status, reason, quantity}]`:
+  - `added` or `merged` (summed with an existing line).
+  - `capped`, with `reason` `INSUFFICIENT_STOCK` or `QUANTITY_LIMIT_EXCEEDED`.
+  - `skipped`, with `reason` `PRODUCT_NOT_FOUND`, `VARIANT_REQUIRED`, `VARIANT_NOT_ALLOWED`, `VARIANT_NOT_FOUND`, `OUT_OF_STOCK` or `CART_LIMIT_REACHED`.
+
+  Clear the local cart after a successful response.
+- `POST /favorites/merge {product_ids: [...]}` (at most 200) returns `{added, skipped: [{product_id, reason}]}`.
+
+### Cart endpoints
+
+Every mutating endpoint returns the **whole cart**, so the app needs one round trip.
+
+| Endpoint | Notes |
+|---|---|
+| `GET /cart` | The cart |
+| `POST /cart/items {product_id, variant_id?, quantity=1}` | `201` for a new line, `200` when an existing line grew (quantities add up) |
+| `PATCH /cart/items/{id} {quantity?, variant_id?}` | Picking a variant that's already in the cart merges the two lines; the result is capped silently and reported in `notices` |
+| `DELETE /cart/items/{id}`, `DELETE /cart` | |
+| `POST /cart/resolve-issues` | The **"update my cart"** button: removes unavailable or out-of-stock lines and caps quantities. `notices` lists every change |
+
+**The cart does not reserve stock.** Stock is checked when you add or update, and shown on every read. It's taken only when an order is placed, so the last item can sell out while it sits in a cart.
+
+Store limits (settings): `cart_max_quantity_per_line` (10), `cart_max_lines` (50), `favorites_max` (200).
+
+### Cart response
+
+Each line has `{id, quantity, product {id, slug, name, type, brand}, variant {id, options, label} | null, image, unit_price, regular_price, compare_at_price, discount_percent, line_total, stock_status, stock_left, items (bundles), issue}`.
+
+- **`image`:** the first image of the selected variant's color, otherwise the product's main image.
+- **Prices:** live; nothing is stored in the cart. Show `compare_at_price` crossed out when it isn't null.
+- **`items`:** for bundles, `[{name, variant_label, quantity}]`.
+
+Summary fields:
+- `items_count`, `lines_count`, `subtotal`, `savings`.
+- `delivery_quotes: [{code, name, description, fee, is_free, free_from, amount_to_free_shipping, requires_address}]`, one per active delivery method. Show a free-shipping progress bar with `amount_to_free_shipping`, for example "باقي ٣٣ € للشحن المجاني".
+- `can_checkout`: true only when the cart has lines and **no** line has an issue.
+- `issues_count`.
+- `notices`: what this request changed; always empty on `GET`.
+
+**Line issues** (not errors). The line is still returned with `line_total` 0 and isn't counted in `subtotal`. Show the message on the line and offer "update my cart":
+
+| `issue.code` | Arabic text | Fix |
+|---|---|---|
+| `UNAVAILABLE` | هذا المنتج لم يعد متوفراً. | Removed by resolve-issues |
+| `VARIANT_UNAVAILABLE` | هذا الخيار (اللون أو الحجم) لم يعد متوفراً. | Removed (or pick another variant with PATCH) |
+| `OUT_OF_STOCK` | نفد من المخزون. | Removed |
+| `INSUFFICIENT_STOCK` | الكمية المتوفرة أقل من المطلوب. (`issue.available`) | Capped to `available` |
+| `QUANTITY_LIMIT_EXCEEDED` | الكمية أكبر من المسموح لهذا المنتج. (`issue.max`) | Capped to `max` |
+
+**Notices** (not errors), returned only by the request that made the change:
+
+| `notices[].code` | Arabic text | Fields |
+|---|---|---|
+| `QUANTITY_CAPPED` | تم تعديل الكمية حسب المتوفر. | `item_id, from_quantity, to_quantity, reason` |
+| `LINES_MERGED` | تم دمج منتجين متطابقين في سطر واحد. | `item_id, from_quantity, to_quantity` |
+| `LINE_REMOVED` | تم حذف منتج لم يعد متوفراً. | `item_id, from_quantity, reason` |
+
+### Favorites
+
+| Endpoint | Notes |
+|---|---|
+| `GET /favorites?page=&page_size=` | Visible favorites as normal product cards, newest favorite first |
+| `GET /favorites/ids` | `{product_ids}`: call once after login to fill the hearts |
+| `PUT /favorites/{product_id}` | `204`, idempotent; `404` if the product isn't visible |
+| `DELETE /favorites/{product_id}` | `204`, idempotent, never `404` |
+| `POST /favorites/{product_id}/move-to-cart {variant_id?, quantity=1}` | Adds to the cart (same rules as `POST /cart/items`) and removes the favorite, in one step. Without `variant_id`, the first active variant in stock is used. If the add fails, the favorite stays |
+
+A favorite whose product is hidden (deactivated, or in a hidden category or brand) isn't listed, but it is kept. It shows up again when the product is published again.
 
 ## Admin catalog workflow
 

@@ -86,6 +86,16 @@ class ErrorCode(StrEnum):
     # Catalog: listing
     INVALID_FILTER = "INVALID_FILTER"
 
+    # Cart and favorites
+    CART_ITEM_NOT_FOUND = "CART_ITEM_NOT_FOUND"
+    VARIANT_REQUIRED = "VARIANT_REQUIRED"
+    VARIANT_NOT_ALLOWED = "VARIANT_NOT_ALLOWED"
+    QUANTITY_LIMIT_EXCEEDED = "QUANTITY_LIMIT_EXCEEDED"
+    INSUFFICIENT_STOCK = "INSUFFICIENT_STOCK"
+    OUT_OF_STOCK = "OUT_OF_STOCK"
+    CART_LIMIT_REACHED = "CART_LIMIT_REACHED"
+    FAVORITES_LIMIT_REACHED = "FAVORITES_LIMIT_REACHED"
+
 
 # Default short Arabic message per code, shown to the user by the app.
 MESSAGES: dict[ErrorCode, str] = {
@@ -149,4 +159,45 @@ MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.FILE_TOO_LARGE: "حجم الملف أكبر من المسموح.",
     ErrorCode.INVALID_IMAGE: "الملف ليس صورة صالحة (JPEG أو PNG أو WEBP).",
     ErrorCode.INVALID_FILTER: "خيارات التصفية غير صحيحة.",
+    ErrorCode.CART_ITEM_NOT_FOUND: "هذا المنتج غير موجود في سلتك.",
+    ErrorCode.VARIANT_REQUIRED: "اختر اللون أو الحجم أولاً.",
+    ErrorCode.VARIANT_NOT_ALLOWED: "هذا المنتج ليس له خيارات.",
+    ErrorCode.QUANTITY_LIMIT_EXCEEDED: "تجاوزت الكمية المسموحة لهذا المنتج.",
+    ErrorCode.INSUFFICIENT_STOCK: "الكمية المطلوبة غير متوفرة حالياً.",
+    ErrorCode.OUT_OF_STOCK: "هذا المنتج نفد من المخزون.",
+    ErrorCode.CART_LIMIT_REACHED: "سلتك ممتلئة. احذف بعض المنتجات أولاً.",
+    ErrorCode.FAVORITES_LIMIT_REACHED: "وصلت للحد الأقصى من المفضلة.",
+}
+
+
+class CartIssue(StrEnum):
+    """Problems of a cart line, reported on reads (not errors; the line is still returned)."""
+
+    UNAVAILABLE = "UNAVAILABLE"
+    VARIANT_UNAVAILABLE = "VARIANT_UNAVAILABLE"
+    OUT_OF_STOCK = "OUT_OF_STOCK"
+    INSUFFICIENT_STOCK = "INSUFFICIENT_STOCK"
+    QUANTITY_LIMIT_EXCEEDED = "QUANTITY_LIMIT_EXCEEDED"
+
+
+class CartNotice(StrEnum):
+    """What the current request changed in the cart (not errors)."""
+
+    QUANTITY_CAPPED = "QUANTITY_CAPPED"
+    LINES_MERGED = "LINES_MERGED"
+    LINE_REMOVED = "LINE_REMOVED"
+
+
+ISSUE_MESSAGES: dict[CartIssue, str] = {
+    CartIssue.UNAVAILABLE: "هذا المنتج لم يعد متوفراً.",
+    CartIssue.VARIANT_UNAVAILABLE: "هذا الخيار (اللون أو الحجم) لم يعد متوفراً.",
+    CartIssue.OUT_OF_STOCK: "نفد من المخزون.",
+    CartIssue.INSUFFICIENT_STOCK: "الكمية المتوفرة أقل من المطلوب.",
+    CartIssue.QUANTITY_LIMIT_EXCEEDED: "الكمية أكبر من المسموح لهذا المنتج.",
+}
+
+NOTICE_MESSAGES: dict[CartNotice, str] = {
+    CartNotice.QUANTITY_CAPPED: "تم تعديل الكمية حسب المتوفر.",
+    CartNotice.LINES_MERGED: "تم دمج منتجين متطابقين في سطر واحد.",
+    CartNotice.LINE_REMOVED: "تم حذف منتج لم يعد متوفراً.",
 }

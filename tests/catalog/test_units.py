@@ -104,6 +104,14 @@ def test_variable_summary_and_bundle_stock() -> None:
     assert bundle_stock([]) == 0
 
 
+def test_variant_label_separator() -> None:
+    from app.modules.products.validation import variant_label
+
+    assert variant_label({"color": "أحمر كلاسيكي", "color_hex": "#B3202C", "size": "50 ml"}) == "أحمر كلاسيكي، 50 ml"
+    assert variant_label({"size": "50 ml", "color_hex": "#B3202C", "color": "أحمر كلاسيكي"}) == "أحمر كلاسيكي، 50 ml"
+    assert variant_label({"weight": "1 kg", "size": "L"}) == "L، 1 kg"
+
+
 def test_stock_status() -> None:
     assert stock_status(0, 3) == (StockStatus.out, None)
     assert stock_status(3, 3) == (StockStatus.low, 3)

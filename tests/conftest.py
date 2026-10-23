@@ -15,10 +15,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import sys
+
 import pytest
 from dotenv import dotenv_values
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tests" / "catalog"))  # catalog_helpers, shared by catalog and cart tests
+sys.path.insert(0, str(ROOT / "tests" / "cart"))  # cart_fixtures
 _dotenv = dotenv_values(ROOT / ".env")
 TEST_DB = os.environ.get("TEST_DATABASE_NAME") or _dotenv.get("TEST_DATABASE_NAME") or "lamsa_test"
 if not TEST_DB.endswith("_test"):

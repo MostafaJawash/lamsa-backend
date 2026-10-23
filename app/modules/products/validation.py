@@ -14,6 +14,7 @@ from app.shared.exceptions import Conflict, ErrorCode, ValidationFailed
 TEXT_MAX_LENGTH = 1000
 OPTION_VALUE_MAX_LENGTH = 50
 HEX_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
+VARIANT_LABEL_SEPARATOR = "، "
 EXPECTED: dict[AttributeType, str] = {
     AttributeType.text: f"string of at most {TEXT_MAX_LENGTH} characters",
     AttributeType.number: "number",
@@ -159,5 +160,8 @@ def validate_variant_set(all_options: Sequence[Mapping[str, Any]]) -> None:
 
 
 def variant_label(options: Mapping[str, Any]) -> str:
-    """Human label of a variant: option values (without hex) joined with " / "."""
-    return " / ".join(str(v) for k, v in options.items() if not k.endswith("_hex"))
+    """Human label of a variant, e.g. "أحمر كلاسيكي، 50 ml": color options first (they have a
+    "<key>_hex" companion), then the other options by key. Independent of JSON key order (MySQL
+    stores object keys shortest first)."""
+    keys = sorted((k for k in options if not k.endswith("_hex")), key=lambda k: (f"{k}_hex" not in options, k))
+    return VARIANT_LABEL_SEPARATOR.join(str(options[k]) for k in keys)

@@ -132,6 +132,9 @@ STORE_SETTINGS: dict[str, Any] = {
     "currency": "EUR",
     "support_phone": None,
     "low_stock_threshold": 3,
+    "cart_max_quantity_per_line": 10,
+    "cart_max_lines": 50,
+    "favorites_max": 200,
 }
 
 

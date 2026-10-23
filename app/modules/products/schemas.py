@@ -62,6 +62,7 @@ class ProductCardOut(BaseModel):
     is_on_sale: bool
     in_stock: bool
     swatches: list[Swatch]
+    is_favorite: bool = Field(default=False, description="Always false for anonymous users")
 
 
 class AttributeValueOut(BaseModel):

@@ -1,6 +1,5 @@
 """Catalog helpers shared by categories, brands and products."""
 
-import json
 import re
 from collections.abc import Collection
 from typing import Any
@@ -10,14 +9,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.products.models import Product, ProductVariant
-from app.modules.settings.models import StoreSetting
 from app.shared.exceptions import Conflict, ErrorCode, ValidationFailed
 from app.shared.utils.slug import is_valid_slug, slug_from_name, with_suffix
 
 DEFINITION_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,49}$")
 SKU_PATTERN = re.compile(r"^[A-Z0-9-]{3,64}$")
-DEFAULT_LOW_STOCK_THRESHOLD = 3
-LOW_STOCK_SETTING = "low_stock_threshold"
 
 
 def json_path(key: str) -> str:
@@ -123,23 +119,3 @@ async def flush_catalog(session: AsyncSession) -> None:
             raise
         raise conflict from exc
 
-
-async def get_low_stock_threshold(session: AsyncSession) -> int:
-    value = await session.scalar(select(StoreSetting.value).where(StoreSetting.key == LOW_STOCK_SETTING))
-    return parse_threshold(value)
-
-
-def low_stock_threshold_subquery() -> Any:
-    """Scalar subquery so the threshold rides along in another query (no extra statement)."""
-    return select(StoreSetting.value).where(StoreSetting.key == LOW_STOCK_SETTING).scalar_subquery()
-
-
-def parse_threshold(value: Any) -> int:
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except ValueError:
-            return DEFAULT_LOW_STOCK_THRESHOLD
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return DEFAULT_LOW_STOCK_THRESHOLD
-    return value

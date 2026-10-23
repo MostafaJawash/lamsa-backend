@@ -9,7 +9,7 @@ POST /auth/refresh does not use an access token at all.
 from dataclasses import dataclass
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,6 +66,20 @@ async def get_current_user_allow_password_change(
     return context.user
 
 
+async def get_optional_user(
+    request: Request, credentials: BearerCredentials, session: DbSession
+) -> User | None:
+    """For public endpoints that personalise their answer (e.g. is_favorite).
+
+    No Authorization header: anonymous (None). A header that is present but not a valid access
+    token: 401 as usual, so the app refreshes its token. The PASSWORD_CHANGE_REQUIRED gate does
+    not apply here: browsing stays possible with a temporary password.
+    """
+    if "authorization" not in request.headers:
+        return None
+    return (await _authenticate(credentials, session)).user
+
+
 async def require_admin(user: Annotated[User, Depends(get_current_user)]) -> User:
     if user.role != UserRole.admin:
         raise Forbidden(ErrorCode.ADMIN_ONLY)
@@ -77,3 +91,4 @@ AuthContextAllowPasswordChange = Annotated[AuthContext, Depends(get_auth_context
 CurrentUser = Annotated[User, Depends(get_current_user)]
 CurrentUserAllowPasswordChange = Annotated[User, Depends(get_current_user_allow_password_change)]
 AdminUser = Annotated[User, Depends(require_admin)]
+OptionalUser = Annotated[User | None, Depends(get_optional_user)]

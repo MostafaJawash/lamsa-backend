@@ -31,8 +31,10 @@ from app.modules.products.filters import NUMBER, ProductFilters, build_condition
 from app.modules.products.models import BundleItem, Product, ProductImage, ProductVariant
 from app.modules.products.presenters import CardRow, LoadedImage, LoadedVariant
 from app.modules.products.schemas import ProductSort
+from app.modules.products.summary import BundleComponent, bundle_stock
 from app.modules.products.visibility import visible_product_condition
-from app.shared.catalog import json_path, low_stock_threshold_subquery
+from app.modules.settings.service import setting_subquery
+from app.shared.catalog import json_path
 
 CARD_COLUMNS = (
     Product.id, Product.slug, Product.name, Product.type, Product.price, Product.sale_price, Product.price_from,
@@ -51,7 +53,7 @@ def card_row(r: Any) -> CardRow:
     )
 
 
-def _card_select(*extra: Any) -> Select[Any]:
+def card_select(*extra: Any) -> Select[Any]:
     return (
         select(*CARD_COLUMNS, *extra)
         .join(Category, Category.id == Product.category_id)
@@ -75,7 +77,7 @@ async def list_cards(
     """One page of cards plus the total via COUNT(*) OVER() (None when the page is empty)."""
     rows = (
         await session.execute(
-            _card_select(func.count().over().label("total"))
+            card_select(func.count().over().label("total"))
             .where(*build_conditions(filters))
             .order_by(*_order(sort, filters))
             .offset(offset)
@@ -139,7 +141,7 @@ class DetailRow:
 async def visible_product_by_slug(session: AsyncSession, slug: str) -> DetailRow | None:
     row = (
         await session.execute(
-            select(Product, Brand, low_stock_threshold_subquery().label("threshold"))
+            select(Product, Brand, setting_subquery("low_stock_threshold").label("threshold"))
             .outerjoin(Brand, Brand.id == Product.brand_id)
             .where(Product.slug == slug, visible_product_condition())
         )
@@ -184,7 +186,15 @@ class BundleComponentRow:
 
 
 async def bundle_components(session: AsyncSession, bundle_id: int) -> list[BundleComponentRow]:
-    """Bundle items with their component product/variant and main image, in one query."""
+    return (await bundle_components_for(session, [bundle_id])).get(bundle_id, [])
+
+
+async def bundle_components_for(
+    session: AsyncSession, bundle_ids: Sequence[int]
+) -> dict[int, list[BundleComponentRow]]:
+    """Items of several bundles with their component product/variant and main image, in ONE query."""
+    if not bundle_ids:
+        return {}
     image = (
         select(ProductImage.image_key)
         .where(ProductImage.product_id == BundleItem.product_id)
@@ -195,31 +205,40 @@ async def bundle_components(session: AsyncSession, bundle_id: int) -> list[Bundl
     )
     rows = await session.execute(
         select(
-            BundleItem.id, BundleItem.quantity, Product.id.label("product_id"), Product.slug, Product.name,
+            BundleItem.bundle_product_id, BundleItem.id, BundleItem.quantity, Product.id.label("product_id"),
+            Product.slug, Product.name,
             Product.is_active, Product.stock, ProductVariant.id.label("variant_id"), ProductVariant.options,
             ProductVariant.stock.label("variant_stock"), ProductVariant.is_active.label("variant_active"),
             image.label("image_key"),
         )
         .join(Product, Product.id == BundleItem.product_id)
         .outerjoin(ProductVariant, ProductVariant.id == BundleItem.variant_id)
-        .where(BundleItem.bundle_product_id == bundle_id)
-        .order_by(BundleItem.id)
+        .where(BundleItem.bundle_product_id.in_(bundle_ids))
+        .order_by(BundleItem.bundle_product_id, BundleItem.id)
     )
-    return [
-        BundleComponentRow(
-            item_id=r.id, quantity=r.quantity, product_id=r.product_id, product_slug=r.slug, product_name=r.name,
-            product_active=r.is_active, product_stock=r.stock, variant_id=r.variant_id, variant_options=r.options,
-            variant_stock=r.variant_stock, variant_active=r.variant_active, image_key=r.image_key,
+    result: dict[int, list[BundleComponentRow]] = {}
+    for r in rows:
+        result.setdefault(r.bundle_product_id, []).append(
+            BundleComponentRow(
+                item_id=r.id, quantity=r.quantity, product_id=r.product_id, product_slug=r.slug,
+                product_name=r.name, product_active=r.is_active, product_stock=r.stock, variant_id=r.variant_id,
+                variant_options=r.options, variant_stock=r.variant_stock, variant_active=r.variant_active,
+                image_key=r.image_key,
+            )
         )
-        for r in rows
-    ]
+    return result
+
+
+def derived_bundle_stock(components: Sequence[BundleComponentRow]) -> int:
+    """Bundle stock from loaded components (the rule lives in summary.bundle_stock)."""
+    return bundle_stock([BundleComponent(c.quantity, c.stock, c.active) for c in components])
 
 
 async def related_cards(
     session: AsyncSession, category_ids: Sequence[int], exclude_ids: Sequence[int], limit: int
 ) -> list[CardRow]:
     rows = await session.execute(
-        _card_select()
+        card_select()
         .where(
             visible_product_condition(),
             Product.in_stock.is_(True),

@@ -256,7 +256,7 @@ async def test_images_per_color(client: AsyncClient, admin_headers: dict[str, st
     assert by_id[blue50["id"]]["image_ids"] == [via_variant["images"][0]["id"], *general_ids]
 
     missing = await upload_images(client, admin_headers, p["id"], color="أخضر")
-    assert missing.status_code == 422 and code_of(missing) == "VARIANT_NOT_FOUND"
+    assert missing.status_code == 404 and code_of(missing) == "VARIANT_NOT_FOUND"
 
 
 async def test_detail_bundle(client: AsyncClient, admin_headers: dict[str, str], catalog: dict[str, Any]) -> None:

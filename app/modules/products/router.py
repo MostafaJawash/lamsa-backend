@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from app.modules.products.catalog_service import CatalogProductService, ListQuery
 from app.modules.products.schemas import FacetsOut, ProductCardOut, ProductDetailOut, ProductSort
-from app.shared.dependencies.auth import DbSession
+from app.shared.dependencies.auth import DbSession, OptionalUser
 from app.shared.dependencies.pagination import Page, PageParamsDep
 
 router = APIRouter(prefix="/products", tags=["catalog"])
@@ -50,9 +50,10 @@ async def list_products(
     query: ListQueryDep,
     params: PageParamsDep,
     service: Service,
+    user: OptionalUser,
     sort: Annotated[ProductSort | None, Query(description="Default: relevance with q, else newest")] = None,
 ) -> Page[ProductCardOut]:
-    return await service.list(query, sort, params)
+    return await service.list(query, sort, params, user.id if user else None)
 
 
 @router.get("/facets", response_model=FacetsOut, description=FILTERS_DOC)
@@ -63,12 +64,12 @@ async def product_facets(query: ListQueryDep, service: Service) -> FacetsOut:
 
 
 @router.get("/{slug}", response_model=ProductDetailOut)
-async def get_product(slug: str, service: Service) -> ProductDetailOut:
-    return await service.detail(slug)
+async def get_product(slug: str, service: Service, user: OptionalUser) -> ProductDetailOut:
+    return await service.detail(slug, user.id if user else None)
 
 
 @router.get("/{slug}/related", response_model=list[ProductCardOut])
 async def related_products(
-    slug: str, service: Service, limit: Annotated[int, Query(ge=1, le=12)] = 8
+    slug: str, service: Service, user: OptionalUser, limit: Annotated[int, Query(ge=1, le=12)] = 8
 ) -> list[ProductCardOut]:
-    return await service.related(slug, limit)
+    return await service.related(slug, limit, user.id if user else None)

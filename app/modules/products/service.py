@@ -47,7 +47,7 @@ from app.modules.products.schemas import (
     VariantIn,
     VariantUpdate,
 )
-from app.modules.products.summary import BundleComponent, bundle_stock, refresh_products
+from app.modules.products.summary import refresh_products
 from app.modules.products.utils import build_options_signature
 from app.modules.products.validation import (
     missing_required,
@@ -60,11 +60,11 @@ from app.shared.catalog import (
     ensure_sku_available,
     field_error,
     flush_catalog,
-    get_low_stock_threshold,
     normalize_sku,
     sku_taken,
     unique_slug,
 )
+from app.modules.settings.service import get_low_stock_threshold
 from app.shared.dependencies.pagination import Page, PageParams
 from app.shared.exceptions import Conflict, ErrorCode, NotFound, ValidationFailed
 from app.shared.schemas import image_urls
@@ -576,7 +576,7 @@ class AdminProductService:
             (v for v in variants if color_def is not None and v.options.get(color_def.key) == color), None
         )
         if match is None:
-            raise ValidationFailed(ErrorCode.VARIANT_NOT_FOUND, details={"color": color})
+            raise NotFound(ErrorCode.VARIANT_NOT_FOUND, details={"color": color})
         return match, color
 
     async def update_image(self, product_id: int, image_id: int, data: ImageUpdate) -> AdminImageOut:
@@ -639,7 +639,8 @@ class AdminProductService:
         definitions = await self._definitions(await self._category(product.category_id))
         variants = (await repo.variants_of(self.session, [product.id], active_only=False)).get(product.id, [])
         loaded = [repo_image(i) for i in images]
-        return image_colors(loaded, variants, definitions.color_option)
+        color_key = definitions.color_option.key if definitions.color_option else None
+        return image_colors(loaded, variants, color_key)
 
     @staticmethod
     def _image_out(image: ProductImage, colors: Mapping[int, str | None]) -> AdminImageOut:
@@ -669,11 +670,12 @@ class AdminProductService:
         loaded_variants = [repo.loaded_variant(v) for v in variants]
         loaded_images = [repo_image(i) for i in images]
         color = definitions.color_option
-        colors = image_colors(loaded_images, loaded_variants, color)
+        color_key = color.key if color else None
+        colors = image_colors(loaded_images, loaded_variants, color_key)
         components = await repo.bundle_components(self.session, product.id) if product.type == ProductType.bundle else []
 
         warnings: list[ProductWarning] = []
-        missing_colors = colors_without_images(loaded_images, loaded_variants, color)
+        missing_colors = colors_without_images(loaded_images, loaded_variants, color_key)
         if missing_colors:
             warnings.append(ProductWarning(code="COLOR_WITHOUT_IMAGES", colors=missing_colors))
         reasons = await self._publish_reasons(product, category, definitions)
@@ -683,9 +685,7 @@ class AdminProductService:
             category=CategoryRef(id=category.id, name=category.name, slug=category.slug),
             brand=BrandRef(id=brand.id, name=brand.name, slug=brand.slug) if brand else None,
             sku=product.sku, price=product.price, sale_price=product.sale_price, stock=product.stock,
-            bundle_stock=bundle_stock([BundleComponent(c.quantity, c.stock, c.active) for c in components])
-            if product.type == ProductType.bundle
-            else None,
+            bundle_stock=repo.derived_bundle_stock(components) if product.type == ProductType.bundle else None,
             attributes=product.attributes or {}, price_from=product.price_from, in_stock=product.in_stock,
             is_on_sale=product.is_on_sale, is_new=product.is_new, is_active=product.is_active,
             created_at=product.created_at, updated_at=product.updated_at,

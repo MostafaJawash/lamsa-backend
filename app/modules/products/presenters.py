@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.modules.brands.schemas import BrandRef
-from app.modules.categories.definitions import AttributeDef, EffectiveDefinitions, VariantOptionDef
+from app.modules.categories.definitions import AttributeDef, EffectiveDefinitions
 from app.modules.categories.enums import AttributeType
 from app.modules.categories.schemas import CategoryRef
 from app.modules.products.enums import ProductType
@@ -81,14 +81,33 @@ def swatches(variants: Sequence[LoadedVariant]) -> list[Swatch]:
     return result
 
 
+@dataclass(frozen=True)
+class PriceInfo:
+    """THE pricing rule: what the customer pays, the regular price, and the crossed-out price."""
+
+    current: Decimal
+    regular: Decimal
+    compare_at: Decimal | None  # the regular price, when current is a sale price
+    discount_percent: int | None
+
+
+def price_info(price: Decimal | None, sale_price: Decimal | None) -> PriceInfo:
+    regular = price if price is not None else Decimal("0.00")
+    if sale_price is None:
+        return PriceInfo(current=regular, regular=regular, compare_at=None, discount_percent=None)
+    return PriceInfo(
+        current=sale_price, regular=regular, compare_at=regular, discount_percent=discount_percent(regular, sale_price)
+    )
+
+
 def compare_at(
     product_type: ProductType, price: Decimal | None, sale_price: Decimal | None, variants: Sequence[LoadedVariant]
 ) -> Decimal | None:
-    """Regular price that matches the shown price when that price is a sale price."""
+    """Regular price that matches the shown (lowest) price when that price is a sale price."""
     if product_type == ProductType.variable:
         chosen = pick_variant_for_price([v.row() for v in variants])
-        return chosen.price if chosen is not None and chosen.sale_price is not None else None
-    return price if sale_price is not None else None
+        return price_info(chosen.price, chosen.sale_price).compare_at if chosen is not None else None
+    return price_info(price, sale_price).compare_at
 
 
 @dataclass(frozen=True)
@@ -132,48 +151,66 @@ class LoadedImage:
     sort_order: int
 
 
+# Image color rules, in one place. `color_key` is the key of the category's color option
+# (e.g. "color"), or None when there is none.
+
+
 def image_colors(
-    images: Sequence[LoadedImage], variants: Sequence[LoadedVariant], color: VariantOptionDef | None
+    images: Sequence[LoadedImage], variants: Sequence[LoadedVariant], color_key: str | None
 ) -> dict[int, str | None]:
     """Color value each image belongs to (via its variant), or None for general images."""
-    if color is None:
+    if color_key is None:
         return {i.id: None for i in images}
     by_id = {v.id: v for v in variants}
     result: dict[int, str | None] = {}
     for image in images:
         variant = by_id.get(image.variant_id) if image.variant_id is not None else None
-        result[image.id] = variant.options.get(color.key) if variant is not None else None
+        result[image.id] = variant.options.get(color_key) if variant is not None else None
     return result
+
+
+def color_image_ids(
+    variant: LoadedVariant,
+    images: Sequence[LoadedImage],
+    colors: Mapping[int, str | None],
+    color_key: str | None,
+) -> list[int]:
+    """Images of the variant's color, in sort_order (an image linked to one variant serves every
+    variant of that color). Without a color option: images linked to this exact variant."""
+    ordered = sorted(images, key=lambda i: (i.sort_order, i.id))
+    if color_key is not None:
+        own_color = variant.options.get(color_key)
+        return [i.id for i in ordered if own_color is not None and colors.get(i.id) == own_color]
+    return [i.id for i in ordered if i.variant_id == variant.id]
 
 
 def variant_image_ids(
     variant: LoadedVariant,
     images: Sequence[LoadedImage],
     colors: Mapping[int, str | None],
-    color: VariantOptionDef | None,
+    color_key: str | None,
 ) -> list[int]:
-    """Images of the variant's color (or, without a color option, of the variant itself) in
-    sort_order, followed by the general images."""
-    ordered = sorted(images, key=lambda i: (i.sort_order, i.id))
-    if color is not None:
-        own_color = variant.options.get(color.key)
-        specific = [i.id for i in ordered if own_color is not None and colors.get(i.id) == own_color]
-    else:
-        specific = [i.id for i in ordered if i.variant_id == variant.id]
-    general = [i.id for i in ordered if i.variant_id is None]
+    """The variant's color images in sort_order, followed by the general images."""
+    specific = color_image_ids(variant, images, colors, color_key)
+    general = [i.id for i in sorted(images, key=lambda i: (i.sort_order, i.id)) if i.variant_id is None]
     return specific + [i for i in general if i not in specific]
 
 
+def main_image(images: Sequence[LoadedImage]) -> LoadedImage | None:
+    """The product's main image: lowest sort_order."""
+    return min(images, key=lambda i: (i.sort_order, i.id), default=None)
+
+
 def colors_without_images(
-    images: Sequence[LoadedImage], variants: Sequence[LoadedVariant], color: VariantOptionDef | None
+    images: Sequence[LoadedImage], variants: Sequence[LoadedVariant], color_key: str | None
 ) -> list[str]:
-    if color is None:
+    if color_key is None:
         return []
-    colors = image_colors(images, variants, color)
+    colors = image_colors(images, variants, color_key)
     with_images = {c for c in colors.values() if c is not None}
     active_colors: list[str] = []
     for v in sorted((v for v in variants if v.is_active), key=lambda v: (v.sort_order, v.id)):
-        value = v.options.get(color.key)
+        value = v.options.get(color_key)
         if value is not None and value not in active_colors:
             active_colors.append(value)
     return [c for c in active_colors if c not in with_images]
