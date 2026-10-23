@@ -1,0 +1,297 @@
+"""Public catalog reads: product list, facets, detail, related. Read-only, bounded queries."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from decimal import Decimal
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.modules.brands.schemas import BrandRef
+from app.modules.categories.definitions import load_definition_rows, merge_definitions
+from app.modules.categories.enums import AttributeType
+from app.modules.categories.models import Category
+from app.modules.categories.schemas import CategoryRef
+from app.modules.categories.tree import CategoryIndex, load_category_index
+from app.modules.products import repository as repo
+from app.modules.products.enums import ProductType
+from app.modules.products.filters import (
+    FilterDefinitions,
+    ProductFilters,
+    definitions_for_all,
+    definitions_for_category,
+    has_definition_params,
+    parse_definition_filters,
+    validate_price_range,
+)
+from app.modules.products.presenters import (
+    CardRow,
+    attribute_values,
+    build_card,
+    image_colors,
+    stock_status,
+    variant_image_ids,
+    variant_option_values,
+)
+from app.modules.products.schemas import (
+    AttributeFacet,
+    BrandFacet,
+    BundleItemOut,
+    BundleItemProductOut,
+    FacetsOut,
+    FacetValue,
+    OptionFacet,
+    PriceRange,
+    ProductCardOut,
+    ProductDetailOut,
+    ProductImageOut,
+    ProductSort,
+    VariantOut,
+)
+from app.modules.products.summary import BundleComponent, bundle_stock
+from app.modules.products.validation import variant_label
+from app.shared.catalog import parse_threshold
+from app.shared.dependencies.pagination import Page, PageParams
+from app.shared.exceptions import ErrorCode, NotFound
+from app.shared.money import discount_percent
+from app.shared.schemas import image_urls
+from app.shared.utils.search import build_boolean_query
+
+FACET_ATTRIBUTE_TYPES = {AttributeType.select, AttributeType.multiselect, AttributeType.boolean, AttributeType.number}
+
+
+@dataclass(frozen=True)
+class ListQuery:
+    category: str | None
+    brands: list[str]
+    q: str | None
+    min_price: Decimal | None
+    max_price: Decimal | None
+    in_stock: bool
+    on_sale: bool
+    is_new: bool
+    params: list[tuple[str, str]]
+
+
+@dataclass(frozen=True)
+class ResolvedFilters:
+    filters: ProductFilters
+    category: Category | None
+    index: CategoryIndex
+    empty: bool  # q given but nothing searchable remained
+    definitions: FilterDefinitions | None
+
+
+class CatalogProductService:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    # ------------------------------------------------------------------- filters
+
+    async def _resolve(self, query: ListQuery, *, need_definitions: bool = False) -> ResolvedFilters:
+        validate_price_range(query.min_price, query.max_price)
+        index = await load_category_index(self.session)
+        category: Category | None = None
+        filters = ProductFilters(
+            brand_slugs=list(dict.fromkeys(query.brands)), min_price=query.min_price, max_price=query.max_price,
+            in_stock=query.in_stock, on_sale=query.on_sale, is_new=query.is_new,
+        )
+        if query.category is not None:
+            category = index.by_slug(query.category)
+            if category is None or not index.is_visible(category):
+                raise NotFound(ErrorCode.CATEGORY_NOT_FOUND)
+            filters.category_ids = index.subtree_ids(category)
+
+        definitions: FilterDefinitions | None = None
+        if has_definition_params(query.params) or (need_definitions and category is not None):
+            if category is not None:
+                parent = index.parent(category)
+                rows = await load_definition_rows(self.session, [category.id, *([parent.id] if parent else [])])
+                definitions = definitions_for_category(merge_definitions(category.id, category.parent_id, rows))
+            else:
+                definitions = definitions_for_all(await load_definition_rows(self.session, None))
+            filters.attrs, filters.opts = parse_definition_filters(query.params, definitions)
+
+        empty = False
+        if query.q is not None and query.q.strip():
+            filters.search = build_boolean_query(query.q)
+            empty = filters.search is None
+        return ResolvedFilters(filters=filters, category=category, index=index, empty=empty, definitions=definitions)
+
+    # ---------------------------------------------------------------------- list
+
+    async def list(self, query: ListQuery, sort: ProductSort | None, params: PageParams) -> Page[ProductCardOut]:
+        resolved = await self._resolve(query)
+        if resolved.empty:
+            return Page[ProductCardOut](items=[], page=params.page, page_size=params.page_size, total=0)
+        filters = resolved.filters
+        effective_sort = sort or (ProductSort.relevance if filters.search else ProductSort.newest)
+        rows, total = await repo.list_cards(self.session, filters, effective_sort, params.offset, params.page_size)
+        if total is None:
+            total = await repo.count_products(self.session, filters) if params.page > 1 else 0
+        return Page[ProductCardOut](
+            items=await self._cards(rows), page=params.page, page_size=params.page_size, total=total
+        )
+
+    async def _cards(self, rows: Sequence[CardRow]) -> list[ProductCardOut]:
+        ids = [r.id for r in rows]
+        images = await repo.main_image_keys(self.session, ids)
+        variants = await repo.variants_of(
+            self.session, [r.id for r in rows if r.type == ProductType.variable], active_only=True
+        )
+        return [build_card(r, images.get(r.id), variants.get(r.id, [])) for r in rows]
+
+    # -------------------------------------------------------------------- facets
+
+    async def facets(self, query: ListQuery) -> FacetsOut:
+        resolved = await self._resolve(query, need_definitions=True)
+        if resolved.empty:
+            return FacetsOut(brands=[], price=PriceRange(min=None, max=None))
+        filters = resolved.filters
+        brands = [BrandFacet(slug=s, name=n, count=c) for s, n, c in await repo.brand_facet(self.session, filters)]
+        low, high = await repo.price_facet(self.session, filters)
+        result = FacetsOut(brands=brands, price=PriceRange(min=low, max=high))
+        definitions = resolved.definitions
+        if resolved.category is None or definitions is None:
+            return result
+
+        attr_defs = [d for d in definitions.attributes.values() if d.type in FACET_ATTRIBUTE_TYPES]
+        attr_rows = await repo.attribute_facets(self.session, filters, attr_defs)
+        selected_attr = {f.key: set(f.values) for f in filters.attrs}
+        for d in attr_defs:
+            rows = [r for r in attr_rows if r.key == d.key]
+            if d.type == AttributeType.number:
+                row = rows[0] if rows else None
+                result.attributes.append(
+                    AttributeFacet(
+                        key=d.key, label=d.label, type=d.type, unit=d.unit,
+                        min=float(row.min) if row and row.min is not None else None,
+                        max=float(row.max) if row and row.max is not None else None,
+                    )
+                )
+                continue
+            counts = {r.value: r.count for r in rows if r.value is not None}
+            order = d.options if d.type != AttributeType.boolean else ["true", "false"]
+            values = [
+                FacetValue(value=v, count=counts.get(v, 0))
+                for v in (order or sorted(counts))
+                if counts.get(v, 0) > 0 or v in selected_attr.get(d.key, set())
+            ]
+            result.attributes.append(AttributeFacet(key=d.key, label=d.label, type=d.type, unit=d.unit, values=values))
+
+        option_defs = list(definitions.options.values())
+        option_rows = await repo.option_facets(self.session, filters, option_defs)
+        selected_opt = {f.key: set(f.values) for f in filters.opts}
+        for d in option_defs:
+            rows = [r for r in option_rows if r.key == d.key and r.value is not None]
+            by_value = {r.value: r for r in rows}
+            ordered = [v for v in (d.options or []) if v in by_value] + sorted(
+                (v for v in by_value if v not in (d.options or [])), key=lambda v: (-by_value[v].count, v)
+            )
+            values = [FacetValue(value=v, count=by_value[v].count, hex=by_value[v].hex) for v in ordered if v is not None]
+            values += [FacetValue(value=v, count=0) for v in selected_opt.get(d.key, set()) if v not in by_value]
+            result.options.append(OptionFacet(key=d.key, label=d.label, type=d.type, values=values))
+        return result
+
+    # -------------------------------------------------------------------- detail
+
+    async def detail(self, slug: str) -> ProductDetailOut:
+        index = await load_category_index(self.session)
+        row = await repo.visible_product_by_slug(self.session, slug)
+        if row is None:
+            raise NotFound(ErrorCode.PRODUCT_NOT_FOUND)
+        product, brand = row.product, row.brand
+        threshold = parse_threshold(row.threshold_raw)
+        category = index.by_id[product.category_id]
+        parent = index.parent(category)
+        rows = await load_definition_rows(self.session, [category.id, *([parent.id] if parent else [])])
+        definitions = merge_definitions(category.id, category.parent_id, rows)
+        images = await repo.images_of(self.session, product.id)
+
+        all_variants = []
+        components = []
+        if product.type == ProductType.variable:
+            all_variants = (await repo.variants_of(self.session, [product.id], active_only=False)).get(product.id, [])
+        elif product.type == ProductType.bundle:
+            components = await repo.bundle_components(self.session, product.id)
+        active = [v for v in all_variants if v.is_active]
+
+        card = build_card(
+            CardRow(
+                id=product.id, slug=product.slug, name=product.name, type=product.type, price=product.price,
+                sale_price=product.sale_price, price_from=product.price_from, is_new=product.is_new,
+                is_on_sale=product.is_on_sale, in_stock=product.in_stock,
+                brand=BrandRef(id=brand.id, name=brand.name, slug=brand.slug) if brand else None,
+                category=CategoryRef(id=category.id, name=category.name, slug=category.slug),
+            ),
+            images[0].image_key if images else None,
+            active,
+        )
+        color = definitions.color_option
+        colors = image_colors(images, all_variants, color)
+        detail = ProductDetailOut(
+            **card.model_dump(),
+            description=product.description,
+            breadcrumb=[CategoryRef(id=c.id, name=c.name, slug=c.slug) for c in index.breadcrumb(category)],
+            attributes=attribute_values(definitions, product.attributes or {}),
+            images=[
+                ProductImageOut(
+                    id=i.id, alt_text=i.alt_text, variant_id=i.variant_id, color=colors.get(i.id),
+                    width=i.width, height=i.height, urls=image_urls(i.image_key),  # type: ignore[arg-type]
+                )
+                for i in images
+            ],
+        )
+        if product.type == ProductType.variable:
+            detail.variant_options = variant_option_values(definitions, active)
+            detail.variants = []
+            for v in active:
+                status, left = stock_status(v.stock, threshold)
+                detail.variants.append(
+                    VariantOut(
+                        id=v.id, options=v.options, price=v.price, sale_price=v.sale_price, current_price=v.current,
+                        discount_percent=discount_percent(v.price, v.current) if v.sale_price is not None else None,
+                        stock_status=status, stock_left=left,
+                        image_ids=variant_image_ids(v, images, colors, color),
+                    )
+                )
+            return detail
+
+        stock = (
+            bundle_stock([BundleComponent(c.quantity, c.stock, c.active) for c in components])
+            if product.type == ProductType.bundle
+            else product.stock or 0
+        )
+        detail.regular_price = product.price
+        detail.sale_price = product.sale_price
+        detail.current_price = product.sale_price if product.sale_price is not None else product.price
+        detail.stock_status, detail.stock_left = stock_status(stock, threshold)
+        detail.items = [
+            BundleItemOut(
+                product=BundleItemProductOut(
+                    id=c.product_id, slug=c.product_slug, name=c.product_name, image=image_urls(c.image_key)
+                ),
+                variant_label=variant_label(c.variant_options) if c.variant_options else None,
+                quantity=c.quantity,
+            )
+            for c in components
+        ]
+        return detail
+
+    # ------------------------------------------------------------------- related
+
+    async def related(self, slug: str, limit: int) -> list[ProductCardOut]:
+        index = await load_category_index(self.session)
+        row = await repo.visible_product_by_slug(self.session, slug)
+        if row is None:
+            raise NotFound(ErrorCode.PRODUCT_NOT_FOUND)
+        product = row.product
+        category = index.by_id[product.category_id]
+        rows = await repo.related_cards(self.session, [category.id], [product.id], limit)
+        parent = index.parent(category)
+        if len(rows) < limit and parent is not None:
+            rows += await repo.related_cards(
+                self.session, index.subtree_ids(parent), [product.id, *(r.id for r in rows)], limit - len(rows)
+            )
+        return await self._cards(rows)

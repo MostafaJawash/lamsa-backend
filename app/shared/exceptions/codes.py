@@ -40,6 +40,52 @@ class ErrorCode(StrEnum):
     # Admin
     CANNOT_MODIFY_SELF = "CANNOT_MODIFY_SELF"
 
+    # Catalog: lookups
+    CATEGORY_NOT_FOUND = "CATEGORY_NOT_FOUND"
+    BRAND_NOT_FOUND = "BRAND_NOT_FOUND"
+    PRODUCT_NOT_FOUND = "PRODUCT_NOT_FOUND"
+    VARIANT_NOT_FOUND = "VARIANT_NOT_FOUND"
+    IMAGE_NOT_FOUND = "IMAGE_NOT_FOUND"
+    ATTRIBUTE_NOT_FOUND = "ATTRIBUTE_NOT_FOUND"
+
+    # Catalog: uniqueness and structure
+    SLUG_TAKEN = "SLUG_TAKEN"
+    SKU_TAKEN = "SKU_TAKEN"
+    CATEGORY_NOT_EMPTY = "CATEGORY_NOT_EMPTY"
+    CATEGORY_DEPTH_EXCEEDED = "CATEGORY_DEPTH_EXCEEDED"
+    BRAND_HAS_PRODUCTS = "BRAND_HAS_PRODUCTS"
+
+    # Catalog: definitions
+    ATTRIBUTE_KEY_TAKEN = "ATTRIBUTE_KEY_TAKEN"
+    ATTRIBUTE_IN_USE = "ATTRIBUTE_IN_USE"
+    OPTION_IN_USE = "OPTION_IN_USE"
+    VARIANT_OPTION_IN_USE = "VARIANT_OPTION_IN_USE"
+
+    # Catalog: product data
+    UNKNOWN_ATTRIBUTE = "UNKNOWN_ATTRIBUTE"
+    INVALID_ATTRIBUTE_VALUE = "INVALID_ATTRIBUTE_VALUE"
+    MISSING_REQUIRED_ATTRIBUTE = "MISSING_REQUIRED_ATTRIBUTE"
+    INVALID_VARIANT_OPTIONS = "INVALID_VARIANT_OPTIONS"
+    DUPLICATE_VARIANT = "DUPLICATE_VARIANT"
+    PRODUCT_TYPE_IMMUTABLE = "PRODUCT_TYPE_IMMUTABLE"
+    INVALID_PRODUCT_FOR_TYPE = "INVALID_PRODUCT_FOR_TYPE"
+    PRODUCT_NOT_PUBLISHABLE = "PRODUCT_NOT_PUBLISHABLE"
+    PRODUCT_HAS_ORDERS = "PRODUCT_HAS_ORDERS"
+    PRODUCT_IN_BUNDLE = "PRODUCT_IN_BUNDLE"
+    VARIANT_HAS_ORDERS = "VARIANT_HAS_ORDERS"
+    VARIANT_IN_BUNDLE = "VARIANT_IN_BUNDLE"
+    INVALID_BUNDLE_ITEM = "INVALID_BUNDLE_ITEM"
+    STOCK_NEGATIVE = "STOCK_NEGATIVE"
+
+    # Catalog: images and uploads
+    IMAGE_LIMIT_REACHED = "IMAGE_LIMIT_REACHED"
+    IMAGE_ORDER_MISMATCH = "IMAGE_ORDER_MISMATCH"
+    FILE_TOO_LARGE = "FILE_TOO_LARGE"
+    INVALID_IMAGE = "INVALID_IMAGE"
+
+    # Catalog: listing
+    INVALID_FILTER = "INVALID_FILTER"
+
 
 # Default short Arabic message per code, shown to the user by the app.
 MESSAGES: dict[ErrorCode, str] = {
@@ -69,4 +115,38 @@ MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.ADDRESS_NOT_FOUND: "العنوان غير موجود.",
     ErrorCode.ADDRESS_LIMIT_REACHED: "وصلت للحد الأقصى من العناوين (10).",
     ErrorCode.CANNOT_MODIFY_SELF: "لا يمكنك إيقاف حسابك أو إزالة صلاحية الإدارة عن نفسك.",
+    ErrorCode.CATEGORY_NOT_FOUND: "القسم غير موجود.",
+    ErrorCode.BRAND_NOT_FOUND: "الماركة غير موجودة.",
+    ErrorCode.PRODUCT_NOT_FOUND: "المنتج غير موجود.",
+    ErrorCode.VARIANT_NOT_FOUND: "هذا الخيار من المنتج غير موجود.",
+    ErrorCode.IMAGE_NOT_FOUND: "الصورة غير موجودة.",
+    ErrorCode.ATTRIBUTE_NOT_FOUND: "الخاصية غير موجودة.",
+    ErrorCode.SLUG_TAKEN: "هذا الرابط المختصر مستخدم. اختر رابطاً آخر.",
+    ErrorCode.SKU_TAKEN: "رمز المنتج (SKU) مستخدم لمنتج آخر.",
+    ErrorCode.CATEGORY_NOT_EMPTY: "لا يمكن حذف قسم فيه أقسام فرعية أو منتجات. أوقفه بدلاً من ذلك.",
+    ErrorCode.CATEGORY_DEPTH_EXCEEDED: "الأقسام مستويان فقط: قسم رئيسي وأقسام فرعية تحته.",
+    ErrorCode.BRAND_HAS_PRODUCTS: "لا يمكن حذف ماركة لها منتجات. أوقفها بدلاً من ذلك.",
+    ErrorCode.ATTRIBUTE_KEY_TAKEN: "هذا المفتاح مستخدم في هذا القسم.",
+    ErrorCode.ATTRIBUTE_IN_USE: "هذه الخاصية مستخدمة في منتجات حالياً.",
+    ErrorCode.OPTION_IN_USE: "هذه القيمة مستخدمة في منتجات حالياً.",
+    ErrorCode.VARIANT_OPTION_IN_USE: "هذا الخيار مستخدم في منتجات حالياً.",
+    ErrorCode.UNKNOWN_ATTRIBUTE: "هذه الخاصية غير معرّفة في قسم المنتج.",
+    ErrorCode.INVALID_ATTRIBUTE_VALUE: "قيمة الخاصية غير صحيحة.",
+    ErrorCode.MISSING_REQUIRED_ATTRIBUTE: "بعض الخصائص المطلوبة ناقصة.",
+    ErrorCode.INVALID_VARIANT_OPTIONS: "خيارات المنتج (اللون أو الحجم...) غير صحيحة.",
+    ErrorCode.DUPLICATE_VARIANT: "يوجد خيار بنفس المواصفات لهذا المنتج.",
+    ErrorCode.PRODUCT_TYPE_IMMUTABLE: "لا يمكن تغيير نوع المنتج بعد إنشائه.",
+    ErrorCode.INVALID_PRODUCT_FOR_TYPE: "هذا الحقل غير مسموح لهذا النوع من المنتجات.",
+    ErrorCode.PRODUCT_NOT_PUBLISHABLE: "المنتج غير جاهز للنشر بعد.",
+    ErrorCode.PRODUCT_HAS_ORDERS: "لا يمكن حذف منتج موجود في طلبات. أوقفه بدلاً من ذلك.",
+    ErrorCode.PRODUCT_IN_BUNDLE: "لا يمكن حذف منتج موجود داخل بوكس هدايا.",
+    ErrorCode.VARIANT_HAS_ORDERS: "لا يمكن حذف خيار موجود في طلبات. أوقفه بدلاً من ذلك.",
+    ErrorCode.VARIANT_IN_BUNDLE: "لا يمكن حذف خيار موجود داخل بوكس هدايا.",
+    ErrorCode.INVALID_BUNDLE_ITEM: "محتويات البوكس غير صحيحة.",
+    ErrorCode.STOCK_NEGATIVE: "الكمية في المخزون لا يمكن أن تصبح أقل من صفر.",
+    ErrorCode.IMAGE_LIMIT_REACHED: "وصلت للحد الأقصى من الصور لهذا المنتج.",
+    ErrorCode.IMAGE_ORDER_MISMATCH: "ترتيب الصور يجب أن يحتوي كل صور المنتج مرة واحدة.",
+    ErrorCode.FILE_TOO_LARGE: "حجم الملف أكبر من المسموح.",
+    ErrorCode.INVALID_IMAGE: "الملف ليس صورة صالحة (JPEG أو PNG أو WEBP).",
+    ErrorCode.INVALID_FILTER: "خيارات التصفية غير صحيحة.",
 }

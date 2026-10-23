@@ -35,8 +35,11 @@ class Product(IdMixin, TimestampMixin, Base):
     price_from, in_stock and is_on_sale are denormalized and recalculated by the service
     layer whenever variants, prices or stock change.
 
-    Search uses the FULLTEXT ngram index on (name, description); query it IN BOOLEAN MODE,
-    because natural-language mode over-matches Arabic on common bigrams such as "ال".
+    search_text is maintained by the service (app.modules.products.summary): the Arabic-normalized
+    name, description, brand name, category and parent category names, text/select/multiselect
+    attribute values and active variant option values. MySQL's FULLTEXT does not fold Arabic
+    letter variants (أ/ا, ة/ه, ى/ي, tashkeel, tatweel), so both this column and the query are
+    normalized by app.shared.utils.arabic.normalize_arabic.
     """
 
     __tablename__ = "products"
@@ -52,13 +55,13 @@ class Product(IdMixin, TimestampMixin, Base):
         Index("ix_products_category_id_is_active", "category_id", "is_active"),
         Index("ix_products_brand_id_is_active", "brand_id", "is_active"),
         # SEARCH RULE: query this index only with
-        #   MATCH(name, description) AGAINST(:q IN BOOLEAN MODE)
-        # Natural-language mode over-matches Arabic: the ngram parser (token size 2) splits
-        # words into bigrams, and common ones such as "ال" match almost every product.
+        #   MATCH(search_text) AGAINST(:q IN BOOLEAN MODE)
+        # with :q built by app.shared.utils.search.build_boolean_query(). Natural-language mode
+        # over-matches Arabic: the ngram parser (token size 2) splits words into bigrams, and
+        # common ones such as "ال" match almost every product.
         Index(
-            "ft_products_name_description",
-            "name",
-            "description",
+            "ft_products_search_text",
+            "search_text",
             mysql_prefix="FULLTEXT",
             mysql_with_parser="ngram",
         ),
@@ -85,6 +88,9 @@ class Product(IdMixin, TimestampMixin, Base):
     is_new: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"))
     is_on_sale: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    # No server default (MySQL reflects it as _utf8mb4'', which alembic flags); the ORM always
+    # writes it, and the service fills it via refresh_search_text().
+    search_text: Mapped[str] = mapped_column(Text, default="")
 
     category: Mapped[Category] = relationship(back_populates="products", lazy="raise")
     brand: Mapped[Brand | None] = relationship(back_populates="products", lazy="raise")

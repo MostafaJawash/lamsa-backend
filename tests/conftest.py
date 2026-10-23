@@ -118,9 +118,15 @@ async def client_factory(db_session: AsyncSession) -> AsyncIterator[ClientFactor
     """Create clients with a chosen source IP. All share the test transaction."""
 
     async def override_get_db() -> AsyncIterator[AsyncSession]:
-        yield db_session
-        # Like production (one session per request): forget loaded objects between requests.
-        db_session.expunge_all()
+        try:
+            yield db_session
+        except Exception:
+            # Like production, a failed request leaves nothing behind (back to the savepoint).
+            await db_session.rollback()
+            raise
+        finally:
+            # Like production (one session per request): forget loaded objects between requests.
+            db_session.expunge_all()
 
     app.dependency_overrides[get_db] = override_get_db
     async with AsyncExitStack() as stack:
@@ -205,3 +211,79 @@ def error_code(response: Any) -> str:
     assert set(body["error"]) == {"code", "message", "details"}, body
     code: str = body["error"]["code"]
     return code
+
+
+# ------------------------------------------------------------------------------ catalog
+
+
+@pytest.fixture(autouse=True)
+def media_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Every test stores images in its own temporary MEDIA_ROOT."""
+    from app.integrations.storage import get_storage
+
+    root = tmp_path / "app-media"
+    root.mkdir()
+    monkeypatch.setattr(settings, "MEDIA_ROOT", root)
+    get_storage.cache_clear()
+    yield root
+    get_storage.cache_clear()
+
+
+@dataclass
+class QueryCounter:
+    statements: list[str]
+
+    @property
+    def count(self) -> int:
+        return len(self.statements)
+
+
+@pytest.fixture
+def count_queries(db_session: AsyncSession) -> Callable[[], Any]:
+    """Context manager counting SQL statements sent by the app (savepoint bookkeeping excluded)."""
+    from contextlib import contextmanager
+
+    from sqlalchemy import event
+
+    @contextmanager
+    def counter() -> Iterator[QueryCounter]:
+        result = QueryCounter(statements=[])
+        sync_connection = db_session.bind.sync_connection  # type: ignore[union-attr]
+
+        def before_execute(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+            head = statement.lstrip().upper()
+            if not head.startswith(("SAVEPOINT", "RELEASE SAVEPOINT", "ROLLBACK TO SAVEPOINT")):
+                result.statements.append(statement)
+
+        event.listen(sync_connection, "before_cursor_execute", before_execute)
+        try:
+            yield result
+        finally:
+            event.remove(sync_connection, "before_cursor_execute", before_execute)
+
+    return counter
+
+
+@pytest.fixture
+async def admin_headers(client: AsyncClient, db_session: AsyncSession) -> dict[str, str]:
+    data = await register(client, 97, name="Catalog Admin")
+    await make_admin(db_session, data["user"]["id"])
+    return bearer(data["access_token"])
+
+
+@pytest.fixture
+async def customer_headers(client: AsyncClient) -> dict[str, str]:
+    return bearer((await register(client, 98, name="Customer"))["access_token"])
+
+
+@pytest.fixture
+async def base_categories(db_session: AsyncSession) -> dict[str, int]:
+    """The real seed categories (makeup, care > perfumes, hair) inside the test transaction."""
+    from scripts.seed_base import seed_categories
+
+    from app.modules.categories.models import Category
+
+    await seed_categories(db_session)
+    await db_session.commit()
+    rows = (await db_session.execute(select(Category.slug, Category.id))).all()
+    return {slug: category_id for slug, category_id in rows}
