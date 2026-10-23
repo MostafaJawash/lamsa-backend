@@ -53,6 +53,19 @@ class ValidationFailed(AppError):
     default_status = 422
 
 
+def out_of_stock(product_id: int, variant_id: int | None) -> Conflict:
+    """409 OUT_OF_STOCK, details {product_id, variant_id} (variant_id null for simple/bundle)."""
+    return Conflict(ErrorCode.OUT_OF_STOCK, details={"product_id": product_id, "variant_id": variant_id})
+
+
+def insufficient_stock(product_id: int, variant_id: int | None, available: int) -> Conflict:
+    """409 INSUFFICIENT_STOCK, details {product_id, variant_id, available}: the same shape everywhere."""
+    return Conflict(
+        ErrorCode.INSUFFICIENT_STOCK,
+        details={"product_id": product_id, "variant_id": variant_id, "available": max(0, available)},
+    )
+
+
 class TooManyRequests(AppError):
     default_status = 429
 

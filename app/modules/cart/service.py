@@ -43,6 +43,7 @@ from app.modules.products.presenters import (
     color_image_ids,
     color_key_of,
     image_colors,
+    PriceInfo,
     main_image,
     price_info,
     stock_status,
@@ -61,6 +62,8 @@ from app.shared.exceptions import (
     ErrorCode,
     NotFound,
     ValidationFailed,
+    insufficient_stock,
+    out_of_stock,
 )
 from app.shared.schemas import image_urls
 
@@ -143,6 +146,13 @@ def evaluate(row: LineRow, limits: StoreLimits, loader: CartLoader) -> Evaluated
     return EvaluatedLine(row=row, available=available, issue=issue, max_quantity=limits.cart_max_quantity_per_line)
 
 
+def line_prices(row: LineRow) -> PriceInfo:
+    """THE price rule for a cart line (also used for the order snapshot)."""
+    if row.type == ProductType.variable:
+        return price_info(row.variant_price, row.variant_sale_price)
+    return price_info(row.price, row.sale_price)
+
+
 def line_image(row: LineRow, images: Sequence[LoadedImage], loader: CartLoader) -> str | None:
     """First image of the variant's color if any, else the product's main image."""
     if row.variant_id is not None:
@@ -173,10 +183,7 @@ def build_cart(
     for row in rows:
         ev = evaluate(row, limits, loader)
         evaluated.append(ev)
-        if row.type == ProductType.variable:
-            prices = price_info(row.variant_price, row.variant_sale_price)
-        else:
-            prices = price_info(row.price, row.sale_price)
+        prices = line_prices(row)
         status, left = stock_status(ev.available, limits.low_stock_threshold)
         ok = ev.issue is None
         line_total = prices.current * row.quantity if ok else ZERO
@@ -237,6 +244,21 @@ def delivery_quote(method: DeliveryMethod, subtotal: Decimal) -> DeliveryQuote:
 
 def notice(code: CartNotice, **fields: object) -> CartNoticeOut:
     return CartNoticeOut(code=code, message=NOTICE_MESSAGES[code], **fields)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
+class CheckoutSnapshot:
+    cart: CartOut
+    rows: list[LineRow]
+    evaluated: list[EvaluatedLine]
+    images: dict[int, list[LoadedImage]]
+    loader: CartLoader
+    limits: StoreLimits
+    methods: list[DeliveryMethod]  # active, as quoted in `cart`
+
+    def method(self, code: str) -> DeliveryMethod | None:
+        return next((m for m in self.methods if m.code == code), None)
+
 
 
 # ============================================================================== planning
@@ -328,7 +350,7 @@ def plan_add(
 
     if available <= 0:
         if strict:
-            raise Conflict(ErrorCode.OUT_OF_STOCK, details={"available": 0})
+            raise out_of_stock(target.id, key[1])
         raise Skip(ErrorCode.OUT_OF_STOCK)
     if existing is None and len(plan.lines) >= limits.cart_max_lines:
         if strict:
@@ -338,7 +360,7 @@ def plan_add(
         if wanted > maximum:
             raise ValidationFailed(ErrorCode.QUANTITY_LIMIT_EXCEEDED, details={"max": maximum})
         if wanted > available:
-            raise Conflict(ErrorCode.INSUFFICIENT_STOCK, details={"available": available})
+            raise insufficient_stock(target.id, key[1], available)
     final = min(wanted, maximum, available)
     if existing is None:
         plan.lines[key] = PlannedLine(target.id, key[1], final, None)
@@ -373,10 +395,15 @@ class CartService:
         return cart
 
     async def _render(
-        self, limits: StoreLimits | None, notices: Sequence[CartNoticeOut] = (), *, lock_lines: bool = False
+        self,
+        limits: StoreLimits | None,
+        notices: Sequence[CartNoticeOut] = (),
+        *,
+        lock_lines: bool = False,
+        lock_products: bool = False,
     ) -> tuple[CartOut, tuple[list[LineRow], dict[int, list[LoadedImage]], list[DeliveryMethod], list[EvaluatedLine], StoreLimits]]:
         """limits=None: take them from the delivery-methods query (no extra statement)."""
-        rows = await repo.load_lines(self.session, self.user_id, lock=lock_lines)
+        rows = await repo.load_lines(self.session, self.user_id, lock=lock_lines, lock_products=lock_products)
         await self.loader.ensure_variants({r.product_id for r in rows if r.type == ProductType.variable})
         images = await repo.images_for(self.session, sorted({r.product_id for r in rows}))
         await self.loader.ensure_components({r.product_id for r in rows if r.type == ProductType.bundle})
@@ -384,6 +411,14 @@ class CartService:
         limits = limits or riding_limits or await load_limits(self.session)
         cart, evaluated = build_cart(rows, limits, self.loader, images, methods, notices)
         return cart, (rows, images, methods, evaluated, limits)
+
+    async def checkout_snapshot(self, limits: StoreLimits) -> CheckoutSnapshot:
+        """The cart exactly as GET /cart computes it, plus the loaded data placement needs for
+        order snapshots. Call only after the product/variant rows are locked (see orders)."""
+        cart, (rows, images, methods, evaluated, limits) = await self._render(limits, lock_products=True)
+        return CheckoutSnapshot(
+            cart=cart, rows=rows, evaluated=evaluated, images=images, loader=self.loader, limits=limits, methods=methods
+        )
 
     # ---------------------------------------------------------------- transaction
 
@@ -444,7 +479,7 @@ class CartService:
         if pick_variant and variant_id is None and target is not None and target.type == ProductType.variable and target.visible:
             in_stock = [v for v in self.loader.variants.get(product_id, []) if v.is_active and v.stock > 0]
             if not in_stock:
-                raise Conflict(ErrorCode.OUT_OF_STOCK, details={"available": 0})
+                raise out_of_stock(product_id, None)
             variant_id = min(in_stock, key=lambda v: (v.sort_order, v.id)).id
         target, variant = resolve_variant(target, variant_id, self.loader)
         key = (target.id, variant.id if variant else None)
@@ -476,7 +511,7 @@ class CartService:
             if other is not None and other.line_id is not None:
                 # The user picked a variant they already have: merge the two lines, capping silently.
                 if available <= 0:
-                    raise Conflict(ErrorCode.OUT_OF_STOCK, details={"available": 0})
+                    raise out_of_stock(target.id, variant.id)
                 summed = other.quantity + wanted
                 final = min(summed, limits.cart_max_quantity_per_line, available)
                 await repo.delete_lines(self.session, self.user_id, [line.id])
@@ -487,12 +522,13 @@ class CartService:
                     notices.append(notice(CartNotice.QUANTITY_CAPPED, item_id=other.line_id, product_id=target.id,
                                           from_quantity=summed, to_quantity=final))
             else:
+                variant_key = variant.id if variant else None
                 if available <= 0:
-                    raise Conflict(ErrorCode.OUT_OF_STOCK, details={"available": 0})
+                    raise out_of_stock(target.id, variant_key)
                 if wanted > limits.cart_max_quantity_per_line:
                     raise ValidationFailed(ErrorCode.QUANTITY_LIMIT_EXCEEDED, details={"max": limits.cart_max_quantity_per_line})
                 if wanted > available:
-                    raise Conflict(ErrorCode.INSUFFICIENT_STOCK, details={"available": available})
+                    raise insufficient_stock(target.id, variant_key, available)
                 await repo.set_line(self.session, line.id, quantity=wanted, variant_id=variant.id if variant else None, now=now)
             await self.session.commit()
             return await self.render(limits, notices)

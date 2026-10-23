@@ -94,6 +94,7 @@ async def test_move_to_cart(client: AsyncClient, admin_headers: dict, customer_h
         ok(await client.post(f"{ADMIN}/products/{shop['perfume']['id']}/variants/{shop[v]['id']}/stock-adjust", json={"delta": -4}, headers=admin_headers))
     none_in_stock = await client.post(f"{FAVORITES}/{shop['perfume']['id']}/move-to-cart", json={}, headers=customer_headers)
     assert none_in_stock.status_code == 409 and code_of(none_in_stock) == "OUT_OF_STOCK"
+    assert none_in_stock.json()["error"]["details"] == {"product_id": shop["perfume"]["id"], "variant_id": None}
     assert ok(await client.get(f"{FAVORITES}/ids", headers=customer_headers))["product_ids"] == [shop["perfume"]["id"]]  # kept
     assert len((await cart(client, customer_headers))["lines"]) == 2
 

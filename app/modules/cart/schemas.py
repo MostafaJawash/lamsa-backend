@@ -128,7 +128,7 @@ MergeStatus = Literal["added", "merged", "capped", "skipped"]
 
 class MergeReportItem(BaseModel):
     index: int
-    product_id: int
+    product_id: int | None
     variant_id: int | None
     status: MergeStatus
     reason: str | None

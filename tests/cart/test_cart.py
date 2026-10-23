@@ -66,6 +66,8 @@ async def test_add_variable_and_bundle(client: AsyncClient, customer_headers: di
 async def test_add_target_rules(client: AsyncClient, customer_headers: dict, shop: dict, product: str, variant: str | None, status: int, code: str) -> None:
     response = await add(client, customer_headers, shop[product]["id"], shop[variant]["id"] if variant else None)
     assert response.status_code == status and code_of(response) == code
+    if code == "OUT_OF_STOCK":
+        assert response.json()["error"]["details"] == {"product_id": shop[product]["id"], "variant_id": shop[variant]["id"]}
 
 
 async def test_add_inactive_variant_and_invisible_product(client: AsyncClient, admin_headers: dict, customer_headers: dict, shop: dict) -> None:
@@ -88,14 +90,16 @@ async def test_quantity_and_stock_limits(client: AsyncClient, customer_headers: 
 
     over_stock = await add(client, customer_headers, shop["simple"]["id"], quantity=6)
     assert over_stock.status_code == 409 and code_of(over_stock) == "INSUFFICIENT_STOCK"
-    assert over_stock.json()["error"]["details"] == {"available": 5}
+    assert over_stock.json()["error"]["details"] == {"product_id": shop["simple"]["id"], "variant_id": None, "available": 5}
     ok(await add(client, customer_headers, shop["simple"]["id"], quantity=4), 201)
     grow = await add(client, customer_headers, shop["simple"]["id"], quantity=2)  # final 6 > 5
     assert code_of(grow) == "INSUFFICIENT_STOCK"
     variant_stock = await add(client, customer_headers, shop["lip"]["id"], shop["pink"]["id"], quantity=3)
-    assert code_of(variant_stock) == "INSUFFICIENT_STOCK" and variant_stock.json()["error"]["details"] == {"available": 2}
+    assert code_of(variant_stock) == "INSUFFICIENT_STOCK"
+    assert variant_stock.json()["error"]["details"] == {"product_id": shop["lip"]["id"], "variant_id": shop["pink"]["id"], "available": 2}
     bundle_stock = await add(client, customer_headers, shop["bundle"]["id"], quantity=3)
-    assert code_of(bundle_stock) == "INSUFFICIENT_STOCK" and bundle_stock.json()["error"]["details"] == {"available": 2}
+    assert code_of(bundle_stock) == "INSUFFICIENT_STOCK"
+    assert bundle_stock.json()["error"]["details"] == {"product_id": shop["bundle"]["id"], "variant_id": None, "available": 2}
 
     await set_setting(db_session, "cart_max_quantity_per_line", 3)
     lowered = await add(client, customer_headers, shop["perfume"]["id"], shop["p50"]["id"], quantity=4)

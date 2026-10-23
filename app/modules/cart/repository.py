@@ -83,13 +83,20 @@ class LineRow:
     variant_sale_price: Decimal | None
     variant_stock: int | None
     variant_active: bool | None
+    product_sku: str | None = None
+    variant_sku: str | None = None
 
 
-async def load_lines(session: AsyncSession, user_id: int, *, lock: bool = False) -> list[LineRow]:
+async def load_lines(
+    session: AsyncSession, user_id: int, *, lock: bool = False, lock_products: bool = False
+) -> list[LineRow]:
     """All of the user's lines with product, brand, variant and visibility, oldest first.
 
-    lock=True (inside a mutation): FOR UPDATE OF cart_items, a locking read that sees the latest
-    committed lines; product data stays a plain read so the cart never blocks admin edits."""
+    lock=True (inside a cart mutation): FOR UPDATE OF cart_items, a locking read that sees the
+    latest committed lines; product data stays a plain read so the cart never blocks admin edits.
+    lock_products=True (checkout, after the product/variant rows were locked in id order): also
+    FOR UPDATE OF products and variants, so prices and stock are the current values, not the
+    request's snapshot. Those rows are already locked, so this adds no new waiting."""
     stmt = (
         select(
             CartItem.id, CartItem.quantity, Product.id.label("product_id"), Product.slug, Product.name, Product.type,
@@ -97,7 +104,8 @@ async def load_lines(session: AsyncSession, user_id: int, *, lock: bool = False)
             Brand.name.label("brand_name"), Brand.slug.label("brand_slug"), ProductVariant.id.label("variant_id"),
             ProductVariant.options, ProductVariant.price.label("variant_price"),
             ProductVariant.sale_price.label("variant_sale_price"), ProductVariant.stock.label("variant_stock"),
-            ProductVariant.is_active.label("variant_active"),
+            ProductVariant.is_active.label("variant_active"), Product.sku.label("product_sku"),
+            ProductVariant.sku.label("variant_sku"),
         )
         .join(Product, Product.id == CartItem.product_id)
         .outerjoin(Brand, Brand.id == Product.brand_id)
@@ -105,7 +113,9 @@ async def load_lines(session: AsyncSession, user_id: int, *, lock: bool = False)
         .where(CartItem.user_id == user_id)
         .order_by(CartItem.created_at, CartItem.id)
     )
-    if lock:
+    if lock_products:
+        stmt = stmt.with_for_update(of=[CartItem, Product, ProductVariant])
+    elif lock:
         stmt = stmt.with_for_update(of=CartItem)
     rows = await session.execute(stmt)
     return [
@@ -114,7 +124,7 @@ async def load_lines(session: AsyncSession, user_id: int, *, lock: bool = False)
             price=r.price, sale_price=r.sale_price, stock=r.stock, visible=bool(r.visible), brand_name=r.brand_name,
             brand_slug=r.brand_slug, variant_id=r.variant_id, variant_options=r.options,
             variant_price=r.variant_price, variant_sale_price=r.variant_sale_price, variant_stock=r.variant_stock,
-            variant_active=r.variant_active,
+            variant_active=r.variant_active, product_sku=r.product_sku, variant_sku=r.variant_sku,
         )
         for r in rows
     ]

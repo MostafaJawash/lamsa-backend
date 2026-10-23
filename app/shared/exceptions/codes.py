@@ -96,6 +96,16 @@ class ErrorCode(StrEnum):
     CART_LIMIT_REACHED = "CART_LIMIT_REACHED"
     FAVORITES_LIMIT_REACHED = "FAVORITES_LIMIT_REACHED"
 
+    # Orders
+    ORDER_NOT_FOUND = "ORDER_NOT_FOUND"
+    CART_EMPTY = "CART_EMPTY"
+    CART_HAS_ISSUES = "CART_HAS_ISSUES"
+    DELIVERY_METHOD_NOT_FOUND = "DELIVERY_METHOD_NOT_FOUND"
+    ADDRESS_REQUIRED = "ADDRESS_REQUIRED"
+    PRICE_CHANGED = "PRICE_CHANGED"
+    ORDER_NOT_CANCELLABLE = "ORDER_NOT_CANCELLABLE"
+    INVALID_STATUS_TRANSITION = "INVALID_STATUS_TRANSITION"
+
 
 # Default short Arabic message per code, shown to the user by the app.
 MESSAGES: dict[ErrorCode, str] = {
@@ -167,6 +177,14 @@ MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.OUT_OF_STOCK: "هذا المنتج نفد من المخزون.",
     ErrorCode.CART_LIMIT_REACHED: "سلتك ممتلئة. احذف بعض المنتجات أولاً.",
     ErrorCode.FAVORITES_LIMIT_REACHED: "وصلت للحد الأقصى من المفضلة.",
+    ErrorCode.ORDER_NOT_FOUND: "الطلب غير موجود.",
+    ErrorCode.CART_EMPTY: "سلتك فارغة.",
+    ErrorCode.CART_HAS_ISSUES: "بعض المنتجات في سلتك تغيّرت. راجع السلة قبل إتمام الطلب.",
+    ErrorCode.DELIVERY_METHOD_NOT_FOUND: "طريقة التوصيل غير متاحة.",
+    ErrorCode.ADDRESS_REQUIRED: "اختر عنوان التوصيل.",
+    ErrorCode.PRICE_CHANGED: "تغيّر مجموع الطلب. راجع السلة من جديد.",
+    ErrorCode.ORDER_NOT_CANCELLABLE: "لا يمكن إلغاء هذا الطلب الآن.",
+    ErrorCode.INVALID_STATUS_TRANSITION: "لا يمكن نقل الطلب إلى هذه الحالة.",
 }
 
 

@@ -255,10 +255,18 @@ Every error, including validation errors and unexpected ones, has this shape:
 | 422 | `VARIANT_REQUIRED` | A variable product needs `variant_id` |
 | 422 | `VARIANT_NOT_ALLOWED` | A simple product or bundle takes no `variant_id` |
 | 422 | `QUANTITY_LIMIT_EXCEEDED` | More than `cart_max_quantity_per_line` of one item (`details.max`). Quantity 0 or less is `VALIDATION_ERROR` |
-| 409 | `INSUFFICIENT_STOCK` | Fewer in stock than the requested final quantity (`details.available`) |
-| 409 | `OUT_OF_STOCK` | Nothing in stock (also `move-to-cart` when no variant is in stock) |
+| 409 | `INSUFFICIENT_STOCK` | Fewer in stock than requested. `details` is always `{product_id, variant_id, available}` (`variant_id` null for simple products and bundles): cart, favorites and checkout |
+| 409 | `OUT_OF_STOCK` | Nothing in stock (also `move-to-cart` when no variant is in stock). `details`: `{product_id, variant_id}` |
 | 422 | `CART_LIMIT_REACHED` | More than `cart_max_lines` different lines (`details.max`) |
 | 422 | `FAVORITES_LIMIT_REACHED` | More than `favorites_max` favorites (`details.max`) |
+| 404 | `ORDER_NOT_FOUND` | The order doesn't exist or isn't yours |
+| 422 | `CART_EMPTY` | Checkout with an empty cart |
+| 409 | `CART_HAS_ISSUES` | A cart line has an issue; `details.cart` is the current cart, so show it |
+| 422 | `DELIVERY_METHOD_NOT_FOUND` | Unknown or inactive delivery method |
+| 422 | `ADDRESS_REQUIRED` | The delivery method needs `address_id` |
+| 409 | `PRICE_CHANGED` | The total differs from `expected_total`; `details`: `{expected_total, total, cart}` |
+| 409 | `ORDER_NOT_CANCELLABLE` | The order can't be cancelled in its current status (`details.status`) |
+| 422 | `INVALID_STATUS_TRANSITION` | Not the next step of the workflow; `details`: `{from, to, allowed}` |
 
 `OUT_OF_STOCK`, `INSUFFICIENT_STOCK` and `QUANTITY_LIMIT_EXCEEDED` are also used as cart **line issue** codes (same meaning, see below). `PRODUCT_NOT_FOUND` and `VARIANT_NOT_FOUND` (404) are reused by the cart for hidden products and missing or inactive variants.
 
@@ -439,6 +447,67 @@ Summary fields:
 | `POST /favorites/{product_id}/move-to-cart {variant_id?, quantity=1}` | Adds to the cart (same rules as `POST /cart/items`) and removes the favorite, in one step. Without `variant_id`, the first active variant in stock is used. If the add fails, the favorite stays |
 
 A favorite whose product is hidden (deactivated, or in a hidden category or brand) isn't listed, but it is kept. It shows up again when the product is published again.
+
+## Orders for app developers
+
+Payment is cash on delivery only, with no minimum order and no coupons (`discount` is 0).
+
+### Checkout
+
+1. Show the cart (`GET /cart`). Checkout is possible only when `can_checkout` is true.
+2. The customer picks a delivery method and, for delivery (not pickup), an address. Show `total = subtotal + delivery_quotes[method].fee`.
+3. `POST /orders` with:
+   - header `Idempotency-Key: <fresh UUID>`, generated **once per checkout attempt** and reused if you retry the same attempt after a network error;
+   - body `{delivery_method_code, address_id?, customer_notes?, gift_message?, expected_total}`, where `expected_total` is the total you showed.
+
+   Pickup takes no `address_id`.
+4. Responses:
+   - `201`: the new order (`OrderDetailOut`). Your cart is now empty.
+   - `200`: the same Idempotency-Key was used before; this is that order, and nothing new happened.
+   - `409 CART_HAS_ISSUES`, `PRICE_CHANGED` or `INSUFFICIENT_STOCK`: something changed since the cart was shown. **Reload the cart** (`details.cart` already contains it for the first two), show what changed, and let the customer confirm again with a **new** Idempotency-Key.
+   - `422 CART_EMPTY`, `ADDRESS_REQUIRED` or `DELIVERY_METHOD_NOT_FOUND`.
+
+Stock is taken when the order is placed and given back when it's cancelled. If two customers try to buy the last item at the same time, exactly one succeeds. The other gets `CART_HAS_ISSUES`, with that line marked `OUT_OF_STOCK`.
+
+### Statuses
+
+| status | label (delivery) | label (pickup) |
+|---|---|---|
+| `pending` | استلمنا طلبك | استلمنا طلبك |
+| `preparing` | قيد التجهيز | قيد التجهيز |
+| `shipped` | انشحن | (not used) |
+| `ready_for_pickup` | (not used) | جاهز للاستلام |
+| `delivered` | وصل | تم الاستلام |
+| `cancelled` | ملغي | ملغي |
+
+- Delivery: `pending → preparing → shipped → delivered`. Pickup: `pending → preparing → ready_for_pickup → delivered`.
+- `status_label` is returned with every order; show it as is.
+- On `delivered`, `payment_status` becomes `paid`.
+
+### Customer endpoints
+
+| Endpoint | Notes |
+|---|---|
+| `GET /orders?status=&page=&page_size=` | Newest first: `{id (order number), created_at, status, status_label, items_count, total, image, delivery_method_name}` |
+| `GET /orders/{id}` | Full detail with item snapshots (name, variant label, options, image, prices, `bundle_contents`) and `product_slug`, which is set only while the product is still visible |
+| `POST /orders/{id}/cancel {reason?}` | **Only while `pending`** (`can_cancel`); afterwards only the store can cancel. Stock is restored |
+| `POST /orders/{id}/reorder` | Puts the items back into the cart with the cart-merge rules and returns the cart plus `merge_report`; deleted or unavailable items are `skipped` |
+
+`timeline` lists every step of the order's workflow, `[{status, label, reached_at, is_current}]`, with `reached_at` null for steps not reached yet. A cancelled order shows the steps it reached, then a `cancelled` step with `cancel_reason`.
+
+## Admin order workflow
+
+`GET /admin/orders?status=&delivery_method=&q=&date_from=&date_to=&sort=newest|oldest|total_desc`:
+- `q` is the order number when it's purely digits; otherwise it matches part of the customer's name or phone. To search by phone, type it with `+` (for example `+49151…`).
+- Dates are **UTC**, and `date_to` is inclusive.
+
+`GET /admin/orders/{id}` returns the full detail plus `customer {user_id, name, phone, orders_count}`, `history` (who changed what, when, and the note), `allowed_next_statuses` and `can_cancel`.
+
+- **Status buttons:** render one button per `allowed_next_statuses` entry. It's always exactly the next step. Moving calls `POST /admin/orders/{id}/status {to_status, note?}`; any other move returns `422 INVALID_STATUS_TRANSITION`.
+- **Cancelling:** `POST /admin/orders/{id}/cancel {reason (3–255 characters), restore_stock=true}` works from `pending`, `preparing`, `shipped` or `ready_for_pickup`. Use `restore_stock=false` only for `shipped` orders whose goods are lost or not returned.
+- **Stats:** `GET /admin/orders/stats?date_from=&date_to=` returns counts per status, `delivered_revenue`, `average_order_value`, `cancelled_rate` and the top 5 products by quantity (delivered orders only).
+
+Domain events (`OrderPlaced`, `OrderStatusChanged`, `OrderCancelled`, `StockLow`) are published in-process after each commit (`app/shared/events`). Currently they're only logged; push notifications will subscribe to them.
 
 ## Admin catalog workflow
 

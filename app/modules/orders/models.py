@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Integer, String
+from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, table_args
@@ -26,6 +26,8 @@ class Order(IdMixin, TimestampMixin, Base):
     __table_args__ = table_args(
         Index("ix_orders_user_id_created_at", "user_id", "created_at"),
         Index("ix_orders_status_created_at", "status", "created_at"),
+        # One order per (user, Idempotency-Key); MySQL allows many NULL keys.
+        UniqueConstraint("user_id", "idempotency_key", name="uq_orders_user_id_idempotency_key"),
         CheckConstraint("subtotal >= 0", name="subtotal_non_negative"),
         CheckConstraint("discount >= 0", name="discount_non_negative"),
         CheckConstraint("shipping_fee >= 0", name="shipping_fee_non_negative"),
@@ -60,6 +62,7 @@ class Order(IdMixin, TimestampMixin, Base):
     customer_notes: Mapped[str | None] = mapped_column(String(500))
     gift_message: Mapped[str | None] = mapped_column(String(500))
     cancel_reason: Mapped[str | None] = mapped_column(String(255))
+    idempotency_key: Mapped[str | None] = mapped_column(String(64))  # from the Idempotency-Key header
 
     user: Mapped[User] = relationship(back_populates="orders", lazy="raise")
     delivery_method: Mapped[DeliveryMethod | None] = relationship(lazy="raise")
