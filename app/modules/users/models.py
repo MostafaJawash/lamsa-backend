@@ -49,6 +49,12 @@ class User(IdMixin, TimestampMixin, Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Notification preferences (order updates cannot be switched off).
+    notify_marketing: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    notify_favorites: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    notify_cart_reminders: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"))
+    # Set by EVERY cart write (deletions too): drives cart reminders.
+    cart_changed_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     addresses: Mapped[list[UserAddress]] = relationship(
         back_populates="user", lazy="raise", cascade="all, delete-orphan", passive_deletes=True

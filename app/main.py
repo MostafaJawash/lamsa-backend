@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -12,6 +13,8 @@ from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.db.session import engine
 from app.integrations.storage import get_storage
+from app.modules.notifications import handlers as notification_handlers
+from app.workers.runner import Worker
 
 logger = logging.getLogger("app")
 
@@ -23,11 +26,23 @@ async def lifespan(app: FastAPI):
             "GOOGLE_DEV_MODE is ON: tokens like 'dev-google|<sub>|<email>|<name>' are accepted "
             "without Google. Never enable this outside local development."
         )
+    worker: Worker | None = None
+    worker_task: asyncio.Task[None] | None = None
+    if settings.run_worker_in_app:
+        worker = Worker()
+        worker_task = asyncio.create_task(worker.run())
+        logger.info("Background worker runs inside the API process (RUN_WORKER_IN_APP)")
     yield
+    if worker is not None and worker_task is not None:
+        worker.stop()
+        await worker_task
     await engine.dispose()
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
+
+# Domain events -> notification rows (after each commit).
+notification_handlers.register()
 
 register_exception_handlers(app)
 

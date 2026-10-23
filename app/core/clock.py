@@ -11,3 +11,8 @@ from datetime import UTC, datetime
 def utcnow() -> datetime:
     """Current UTC time as a naive datetime (MySQL DATETIME columns store UTC)."""
     return datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+
+
+def now_utc() -> datetime:
+    """Same clock, the name used by notification and banner code. Patch `utcnow` in tests."""
+    return utcnow()

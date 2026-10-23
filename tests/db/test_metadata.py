@@ -32,4 +32,4 @@ def test_nullable_json_columns_store_sql_null() -> None:
 
 
 def test_expected_tables() -> None:
-    assert len(Base.metadata.tables) == 23
+    assert len(Base.metadata.tables) == 24

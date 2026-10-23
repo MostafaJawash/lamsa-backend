@@ -135,6 +135,13 @@ STORE_SETTINGS: dict[str, Any] = {
     "cart_max_quantity_per_line": 10,
     "cart_max_lines": 50,
     "favorites_max": 200,
+    "timezone": "Europe/Berlin",
+    "quiet_hours_start": "21:00",
+    "quiet_hours_end": "09:00",
+    "favorite_alert_cooldown_days": 7,
+    "price_drop_min_percent": 5,
+    "cart_reminder_after_hours": 24,
+    "notifications_retention_days": 180,
 }
 
 

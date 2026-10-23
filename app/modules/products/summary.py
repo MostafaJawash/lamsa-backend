@@ -19,6 +19,8 @@ from app.modules.categories.enums import AttributeType
 from app.modules.categories.models import Category
 from app.modules.products.enums import ProductType
 from app.modules.products.models import BundleItem, Product, ProductVariant
+from app.modules.products.visibility import visible_product_condition
+from app.shared.events import DomainEvent, ProductBackInStock, ProductPriceDropped, stash
 from app.shared.utils.arabic import normalize_arabic
 
 ZERO = Decimal("0.00")
@@ -109,6 +111,24 @@ async def load_bundle_components(session: AsyncSession, bundle_ids: Sequence[int
     return result
 
 
+def summary_transitions(old: Any, new: Summary) -> list[DomainEvent]:
+    """Back in stock / price dropped, for visible products only (published after commit)."""
+    if not old.visible:
+        return []
+    events: list[DomainEvent] = []
+    if not old.old_in_stock and new.in_stock:
+        events.append(ProductBackInStock(product_id=old.id))
+    if new.in_stock:
+        sale_started = not old.old_is_on_sale and new.is_on_sale
+        price_went_down = old.old_price_from is not None and new.price_from < old.old_price_from
+        if sale_started or price_went_down:
+            events.append(ProductPriceDropped(
+                product_id=old.id, old_price_from=old.old_price_from or ZERO, new_price_from=new.price_from,
+                sale_started=sale_started,
+            ))
+    return events
+
+
 async def recalculate_product_summary(session: AsyncSession, product_ids: Iterable[int]) -> None:
     """Recompute price_from / in_stock / is_on_sale for the products and every bundle containing them."""
     ids = {int(i) for i in product_ids}
@@ -120,9 +140,15 @@ async def recalculate_product_summary(session: AsyncSession, product_ids: Iterab
     )
     ids |= set(containing.all())
 
+    # The OLD summary and the visibility ride along in the same query, so transitions are
+    # detected without any extra statement.
     products = (
         await session.execute(
-            select(Product.id, Product.type, Product.price, Product.sale_price, Product.stock).where(Product.id.in_(ids))
+            select(
+                Product.id, Product.type, Product.price, Product.sale_price, Product.stock,
+                Product.price_from.label("old_price_from"), Product.in_stock.label("old_in_stock"),
+                Product.is_on_sale.label("old_is_on_sale"), visible_product_condition().label("visible"),
+            ).where(Product.id.in_(ids))
         )
     ).all()
     variable_ids = [p.id for p in products if p.type == ProductType.variable]
@@ -154,6 +180,8 @@ async def recalculate_product_summary(session: AsyncSession, product_ids: Iterab
         values.append(
             {"id": p.id, "price_from": summary.price_from, "in_stock": summary.in_stock, "is_on_sale": summary.is_on_sale}
         )
+        for event in summary_transitions(p, summary):
+            stash(session, event)
     await session.execute(update(Product), values)
     _expire(session, Product, ids, ("price_from", "in_stock", "is_on_sale"))
 

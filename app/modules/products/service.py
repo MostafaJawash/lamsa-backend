@@ -66,6 +66,8 @@ from app.shared.catalog import (
 )
 from app.modules.settings.service import get_low_stock_threshold
 from app.shared.dependencies.pagination import Page, PageParams
+from app.shared.events import StockOut as StockOutEvent
+from app.shared.events import commit_and_publish, stash
 from app.shared.exceptions import Conflict, ErrorCode, NotFound, ValidationFailed
 from app.shared.schemas import image_urls
 from app.shared.utils.search import build_boolean_query
@@ -217,7 +219,7 @@ class AdminProductService:
             await self._replace_bundle_items(product, data.bundle_items)
         await flush_catalog(self.session)
         await refresh_products(self.session, [product.id])
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return await self.get(product.id)
 
     async def _add_variants(
@@ -295,6 +297,8 @@ class AdminProductService:
                     await ensure_sku_available(self.session, sku, product_id=product.id)
                 product.sku = sku
 
+        if "stock" in changes and changes["stock"] == 0 and (product.stock or 0) > 0:
+            stash(self.session, StockOutEvent(product_id=product.id, variant_id=None))
         for field in ("name", "description", "brand_id", "price", "sale_price", "stock", "is_new"):
             if field in changes:
                 setattr(product, field, changes[field])
@@ -311,7 +315,7 @@ class AdminProductService:
 
         await flush_catalog(self.session)
         await refresh_products(self.session, [product.id])
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return await self.get(product.id)
 
     async def _publish_reasons(
@@ -377,8 +381,10 @@ class AdminProductService:
         if result.rowcount == 0:  # type: ignore[attr-defined]
             raise ValidationFailed(ErrorCode.STOCK_NEGATIVE, details={"stock": product.stock, "delta": delta})
         stock = int(await self.session.scalar(select(Product.stock).where(Product.id == product.id)) or 0)
+        if stock == 0:
+            stash(self.session, StockOutEvent(product_id=product.id, variant_id=None))
         await refresh_products(self.session, [product.id])
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return StockOut(stock=stock)
 
     # ====================================================================== variants
@@ -397,7 +403,7 @@ class AdminProductService:
         check_sale_price(data.price, data.sale_price)
         await self._add_variants(product, [data], [options])
         await refresh_products(self.session, [product.id])
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return await self.get(product.id)
 
     async def update_variant(self, product_id: int, variant_id: int, data: VariantUpdate) -> AdminProductOut:
@@ -422,12 +428,14 @@ class AdminProductService:
             if sku != variant.sku:
                 await ensure_sku_available(self.session, sku, variant_id=variant.id)
             variant.sku = sku
+        if "stock" in changes and changes["stock"] == 0 and variant.stock > 0:
+            stash(self.session, StockOutEvent(product_id=product.id, variant_id=variant.id))
         for field in ("price", "sale_price", "stock", "is_active", "sort_order"):
             if field in changes:
                 setattr(variant, field, changes[field])
         await flush_catalog(self.session)
         await refresh_products(self.session, [product.id])
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return await self.get(product.id)
 
     async def delete_variant(self, product_id: int, variant_id: int) -> AdminProductOut:
@@ -440,7 +448,7 @@ class AdminProductService:
         await self.session.delete(variant)
         await self.session.flush()
         await refresh_products(self.session, [product.id])
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return await self.get(product.id)
 
     async def adjust_variant_stock(self, product_id: int, variant_id: int, delta: int) -> StockOut:
@@ -455,8 +463,10 @@ class AdminProductService:
         if result.rowcount == 0:  # type: ignore[attr-defined]
             raise ValidationFailed(ErrorCode.STOCK_NEGATIVE, details={"stock": variant.stock, "delta": delta})
         stock = int(await self.session.scalar(select(ProductVariant.stock).where(ProductVariant.id == variant.id)) or 0)
+        if stock == 0:
+            stash(self.session, StockOutEvent(product_id=product.id, variant_id=variant.id))
         await refresh_products(self.session, [product.id])
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return StockOut(stock=stock)
 
     # ======================================================================= bundles
@@ -467,7 +477,7 @@ class AdminProductService:
             raise _not_for_type("bundle_items", product.type)
         await self._replace_bundle_items(product, items)
         await refresh_products(self.session, [product.id])
-        await self.session.commit()
+        await commit_and_publish(self.session)
         return await self.get(product.id)
 
     async def _replace_bundle_items(self, product: Product, items: Sequence[BundleItemIn]) -> None:
@@ -589,7 +599,7 @@ class AdminProductService:
             image.alt_text = changes["alt_text"] or None
         if "variant_id" in changes:
             image.variant_id = changes["variant_id"]
-        await self.session.commit()
+        await commit_and_publish(self.session)
         colors = await self._image_colors(product, [image])
         return self._image_out(image, colors)
 
@@ -605,7 +615,7 @@ class AdminProductService:
         by_id = {i.id: i for i in images}
         for index, image_id in enumerate(image_ids):
             by_id[image_id].sort_order = index
-        await self.session.commit()
+        await commit_and_publish(self.session)
         ordered = [by_id[i] for i in image_ids]
         colors = await self._image_colors(product, ordered)
         return [self._image_out(i, colors) for i in ordered]

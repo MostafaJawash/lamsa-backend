@@ -8,7 +8,7 @@ from app.modules.cart.models import CartItem
 from app.modules.categories.models import Category, CategoryAttribute, CategoryVariantOption
 from app.modules.delivery.models import DeliveryMethod
 from app.modules.favorites.models import Favorite
-from app.modules.notifications.models import Notification, NotificationRead
+from app.modules.notifications.models import Notification, NotificationRead, UserAlertLog
 from app.modules.orders.models import Order, OrderItem, OrderStatusHistory
 from app.modules.products.models import BundleItem, Product, ProductImage, ProductVariant
 from app.modules.settings.models import StoreSetting
@@ -38,5 +38,6 @@ __all__ = [
     "StoreSetting",
     "User",
     "UserAddress",
+    "UserAlertLog",
     "UserDevice",
 ]

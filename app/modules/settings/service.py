@@ -5,7 +5,9 @@ A key missing in store_settings (or holding an invalid value) falls back to its 
 
 import json
 from dataclasses import dataclass, fields
+from datetime import time
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import ScalarSelect, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -64,3 +66,75 @@ def limits_from_row(row: Any) -> StoreLimits:
 
 async def get_low_stock_threshold(session: AsyncSession) -> int:
     return (await load_limits(session)).low_stock_threshold
+
+
+# ------------------------------------------------------------------- notifications
+
+
+@dataclass(frozen=True)
+class NotificationSettings:
+    timezone: str = "Europe/Berlin"
+    quiet_hours_start: time = time(21, 0)
+    quiet_hours_end: time = time(9, 0)
+    favorite_alert_cooldown_days: int = 7
+    price_drop_min_percent: int = 5
+    cart_reminder_after_hours: int = 24
+    notifications_retention_days: int = 180
+
+    @property
+    def zone(self) -> ZoneInfo:
+        return ZoneInfo(self.timezone)
+
+
+NOTIFICATION_DEFAULTS = NotificationSettings()
+NOTIFICATION_KEYS: tuple[str, ...] = tuple(f.name for f in fields(NotificationSettings))
+INT_MINIMUMS: dict[str, int] = {
+    "favorite_alert_cooldown_days": 0, "price_drop_min_percent": 0, "cart_reminder_after_hours": 1,
+    "notifications_retention_days": 1,
+}
+
+
+def _json(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _parse_time(value: Any, default: time) -> time:
+    try:
+        hours, minutes = str(_json(value)).split(":")
+        return time(int(hours), int(minutes))
+    except (ValueError, TypeError):
+        return default
+
+
+def notification_settings_from(values: dict[str, Any]) -> NotificationSettings:
+    d = NOTIFICATION_DEFAULTS
+    zone = _json(values.get("timezone"))
+    timezone = d.timezone
+    if isinstance(zone, str):
+        try:
+            ZoneInfo(zone)
+            timezone = zone
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
+    ints: dict[str, int] = {}
+    for key, minimum in INT_MINIMUMS.items():
+        raw = _json(values.get(key))
+        ints[key] = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= minimum else getattr(d, key)
+    return NotificationSettings(
+        timezone=timezone,
+        quiet_hours_start=_parse_time(values.get("quiet_hours_start"), d.quiet_hours_start),
+        quiet_hours_end=_parse_time(values.get("quiet_hours_end"), d.quiet_hours_end),
+        **ints,
+    )
+
+
+async def load_notification_settings(session: AsyncSession) -> NotificationSettings:
+    rows = await session.execute(
+        select(StoreSetting.key, StoreSetting.value).where(StoreSetting.key.in_(NOTIFICATION_KEYS))
+    )
+    return notification_settings_from({key: value for key, value in rows.all()})

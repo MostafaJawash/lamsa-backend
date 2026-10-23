@@ -453,7 +453,10 @@ class CartService:
         inserts, updates = plan.writes()
         await repo.delete_lines(self.session, self.user_id, list(deletes))
         await repo.insert_lines(self.session, self.user_id, inserts, now)
-        await repo.set_quantities(self.session, updates, now)
+        if updates:
+            await repo.set_quantities(self.session, updates, now, touch_user_id=self.user_id)
+        elif inserts or deletes:
+            await repo.touch_cart(self.session, self.user_id, now)
 
     # ---------------------------------------------------------------------- add
 
@@ -515,7 +518,7 @@ class CartService:
                 summed = other.quantity + wanted
                 final = min(summed, limits.cart_max_quantity_per_line, available)
                 await repo.delete_lines(self.session, self.user_id, [line.id])
-                await repo.set_quantities(self.session, [(other.line_id, final)], now)
+                await repo.set_quantities(self.session, [(other.line_id, final)], now, touch_user_id=self.user_id)
                 notices.append(notice(CartNotice.LINES_MERGED, item_id=other.line_id, product_id=target.id,
                                       from_quantity=other.quantity, to_quantity=final))
                 if final < summed:
@@ -530,6 +533,7 @@ class CartService:
                 if wanted > available:
                     raise insufficient_stock(target.id, variant_key, available)
                 await repo.set_line(self.session, line.id, quantity=wanted, variant_id=variant.id if variant else None, now=now)
+                await repo.touch_cart(self.session, self.user_id, now)
             await self.session.commit()
             return await self.render(limits, notices)
 
@@ -542,12 +546,14 @@ class CartService:
         if not any(r.id == item_id for r in refs):
             raise NotFound(ErrorCode.CART_ITEM_NOT_FOUND)
         await repo.delete_lines(self.session, self.user_id, [item_id])
+        await repo.touch_cart(self.session, self.user_id, clock.utcnow())
         await self.session.commit()
         return await self.render(limits)
 
     async def clear(self) -> CartOut:
         limits = await repo.lock_user(self.session, self.user_id)
         await repo.delete_lines(self.session, self.user_id)
+        await repo.touch_cart(self.session, self.user_id, clock.utcnow())
         await self.session.commit()
         return await self.render(limits)
 
@@ -571,7 +577,10 @@ class CartService:
                                       from_quantity=ev.row.quantity, to_quantity=ev.allowed, reason=ev.issue))
         now = clock.utcnow()
         await repo.delete_lines(self.session, self.user_id, removed)
-        await repo.set_quantities(self.session, capped, now)
+        if capped:
+            await repo.set_quantities(self.session, capped, now, touch_user_id=self.user_id)
+        elif removed:
+            await repo.touch_cart(self.session, self.user_id, now)
         await self.session.commit()
         # Re-render from what is already loaded (no new queries).
         new_quantity = dict(capped)

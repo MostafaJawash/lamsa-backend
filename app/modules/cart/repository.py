@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import case, delete, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.brands.models import Brand
@@ -185,24 +185,33 @@ async def active_delivery_methods(session: AsyncSession) -> tuple[list[DeliveryM
 
 
 async def insert_lines(session: AsyncSession, user_id: int, rows: Sequence[tuple[int, int | None, int]], now: datetime) -> None:
-    """Insert (product_id, variant_id, quantity) rows in ONE statement."""
+    """Insert (product_id, variant_id, quantity) rows in ONE multi-row INSERT ... VALUES statement
+    (an executemany would be split by SQLAlchemy into one batch per NULL/non-NULL variant_id)."""
     if rows:
         await session.execute(
-            insert(CartItem),
-            [
-                {"user_id": user_id, "product_id": p, "variant_id": v, "quantity": q, "created_at": now, "updated_at": now}
-                for p, v, q in rows
-            ],
+            insert(CartItem).values(
+                [
+                    {"user_id": user_id, "product_id": p, "variant_id": v, "quantity": q, "created_at": now, "updated_at": now}
+                    for p, v, q in rows
+                ]
+            )
         )
 
 
-async def set_quantities(session: AsyncSession, changes: Sequence[tuple[int, int]], now: datetime) -> None:
-    """(line_id, quantity) updates in ONE executemany statement."""
-    if changes:
-        await session.execute(
-            update(CartItem),
-            [{"id": line_id, "quantity": quantity, "updated_at": now} for line_id, quantity in changes],
-        )
+async def set_quantities(
+    session: AsyncSession, changes: Sequence[tuple[int, int]], now: datetime, *, touch_user_id: int | None = None
+) -> None:
+    """(line_id, quantity) updates in ONE statement. With touch_user_id, the same statement also
+    sets users.cart_changed_at (MySQL multi-table UPDATE), so touching costs no extra query."""
+    if not changes:
+        return
+    quantity = case({line_id: q for line_id, q in changes}, value=CartItem.id)
+    stmt = update(CartItem).where(CartItem.id.in_([line_id for line_id, _ in changes]))
+    values: dict[Any, Any] = {CartItem.quantity: quantity, CartItem.updated_at: now}
+    if touch_user_id is not None:
+        stmt = stmt.where(User.id == CartItem.user_id, User.id == touch_user_id)
+        values[User.cart_changed_at] = now
+    await session.execute(stmt.values(values).execution_options(synchronize_session=False))
 
 
 async def set_line(session: AsyncSession, line_id: int, *, quantity: int, variant_id: int | None, now: datetime) -> None:
@@ -211,6 +220,13 @@ async def set_line(session: AsyncSession, line_id: int, *, quantity: int, varian
         .where(CartItem.id == line_id)
         .values(quantity=quantity, variant_id=variant_id, updated_at=now)
         .execution_options(synchronize_session=False)
+    )
+
+
+async def touch_cart(session: AsyncSession, user_id: int, now: datetime) -> None:
+    """users.cart_changed_at: set by EVERY cart write (deletions too); drives cart reminders."""
+    await session.execute(
+        update(User).where(User.id == user_id).values(cart_changed_at=now).execution_options(synchronize_session=False)
     )
 
 

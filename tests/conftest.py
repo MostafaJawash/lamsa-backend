@@ -7,9 +7,10 @@ Database tests: migrations run once per session; every test runs inside one oute
 that is rolled back at the end (services' commits become savepoint releases).
 """
 
+import contextvars
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from contextlib import AsyncExitStack
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,6 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests" / "catalog"))  # catalog_helpers, shared by catalog and cart tests
 sys.path.insert(0, str(ROOT / "tests" / "cart"))  # cart_fixtures
 sys.path.insert(0, str(ROOT / "tests" / "orders"))  # order_helpers
+sys.path.insert(0, str(ROOT / "tests" / "notifications"))  # notification_helpers
 _dotenv = dotenv_values(ROOT / ".env")
 TEST_DB = os.environ.get("TEST_DATABASE_NAME") or _dotenv.get("TEST_DATABASE_NAME") or "lamsa_test"
 if not TEST_DB.endswith("_test"):
@@ -47,7 +49,10 @@ from app.core import clock, security  # noqa: E402
 from app.core.config import settings  # noqa: E402
 from app.db.session import CONNECT_ARGS, get_db  # noqa: E402
 from app.integrations.google import auth as google_auth  # noqa: E402
+from app.integrations.firebase import push  # noqa: E402
+from app.integrations.firebase.push import PushMessage, PushResult  # noqa: E402
 from app.integrations.google.auth import GoogleIdentity  # noqa: E402
+from app.modules.notifications import runtime as notification_runtime  # noqa: E402
 from app.main import app  # noqa: E402
 from app.modules.users.enums import UserRole  # noqa: E402
 from app.modules.users.models import User  # noqa: E402
@@ -101,18 +106,74 @@ def migrated_db() -> None:
     command.upgrade(config, "head")
 
 
+# True while the notification pipeline (handlers, dispatcher, jobs) runs its own session.
+IN_PIPELINE: contextvars.ContextVar[bool] = contextvars.ContextVar("in_pipeline", default=False)
+
+
 @pytest.fixture
 async def db_session(migrated_db: None) -> AsyncIterator[AsyncSession]:
     engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool, connect_args=CONNECT_ARGS)
     async with engine.connect() as connection:
         transaction = await connection.begin()
         session = AsyncSession(bind=connection, join_transaction_mode="create_savepoint", expire_on_commit=False)
+
+        @asynccontextmanager
+        async def pipeline_session() -> AsyncIterator[AsyncSession]:
+            """The pipeline's own session, inside the test transaction (production: own connection)."""
+            token = IN_PIPELINE.set(True)
+            own = AsyncSession(bind=connection, join_transaction_mode="create_savepoint", expire_on_commit=False)
+            try:
+                yield own
+            finally:
+                await own.close()
+                IN_PIPELINE.reset(token)
+
+        notification_runtime.set_session_factory(pipeline_session)
         try:
             yield session
         finally:
+            notification_runtime.set_session_factory(_no_pipeline_session)
             await session.close()
             await transaction.rollback()
     await engine.dispose()
+
+
+@asynccontextmanager
+async def _no_pipeline_session() -> AsyncIterator[AsyncSession]:
+    raise RuntimeError("this test has no db_session: the notification pipeline is off")
+    yield  # pragma: no cover
+
+
+class FakePushSender:
+    """Captures pushes. `codes[token]` = result codes for successive sends (default OK)."""
+
+    def __init__(self) -> None:
+        self.sent: list[PushMessage] = []
+        self.calls: list[list[PushMessage]] = []
+        self.codes: dict[str, list[str]] = {}
+
+    async def send(self, messages: Sequence[PushMessage]) -> list[PushResult]:
+        self.calls.append(list(messages))
+        self.sent.extend(messages)
+        results = []
+        for m in messages:
+            queue = self.codes.get(m.token)
+            code = queue.pop(0) if queue else push.OK
+            results.append(PushResult(m.token, code, None if code == push.OK else f"fake {code}"))
+        return results
+
+
+@pytest.fixture(autouse=True)
+def pushes() -> Iterator[FakePushSender]:
+    """No test ever talks to FCM; background dispatch is off (tests call the dispatcher)."""
+    sender = FakePushSender()
+    push.set_push_sender(sender)
+    notification_runtime.set_immediate_dispatch(False)
+    notification_runtime.set_session_factory(_no_pipeline_session)
+    yield sender
+    push.set_push_sender(None)
+    notification_runtime.set_immediate_dispatch(True)
+    notification_runtime.set_session_factory(None)
 
 
 ClientFactory = Callable[..., Awaitable[AsyncClient]]
@@ -236,7 +297,8 @@ def media_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path
 
 @dataclass
 class QueryCounter:
-    statements: list[str]
+    statements: list[str]  # sent by the request / the code under test
+    pipeline: list[str]  # sent by the notification pipeline's own session (handlers, dispatcher)
 
     @property
     def count(self) -> int:
@@ -252,13 +314,13 @@ def count_queries(db_session: AsyncSession) -> Callable[[], Any]:
 
     @contextmanager
     def counter() -> Iterator[QueryCounter]:
-        result = QueryCounter(statements=[])
+        result = QueryCounter(statements=[], pipeline=[])
         sync_connection = db_session.bind.sync_connection  # type: ignore[union-attr]
 
         def before_execute(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
             head = statement.lstrip().upper()
             if not head.startswith(("SAVEPOINT", "RELEASE SAVEPOINT", "ROLLBACK TO SAVEPOINT")):
-                result.statements.append(statement)
+                (result.pipeline if IN_PIPELINE.get() else result.statements).append(statement)
 
         event.listen(sync_connection, "before_cursor_execute", before_execute)
         try:

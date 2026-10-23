@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
@@ -48,6 +49,10 @@ class Settings(BaseSettings):
     CORS_ORIGINS: CommaList = ["http://localhost:3000", "http://127.0.0.1:3000"]
     TRUST_PROXY_HEADERS: bool = False
 
+    PUSH_BACKEND: str = "log"  # log | firebase
+    FIREBASE_CREDENTIALS_PATH: Path | None = None
+    RUN_WORKER_IN_APP: bool | None = None  # default: true only when APP_ENV=development
+
     @field_validator("GOOGLE_CLIENT_IDS", "CORS_ORIGINS", mode="before")
     @classmethod
     def _split_commas(cls, value: Any) -> Any:
@@ -70,6 +75,20 @@ class Settings(BaseSettings):
         if self.GOOGLE_DEV_MODE and self.APP_ENV != "development":
             raise ValueError("GOOGLE_DEV_MODE=true is only allowed when APP_ENV=development")
         return self
+
+    @model_validator(mode="after")
+    def _push_backend(self) -> "Settings":
+        if self.PUSH_BACKEND not in ("log", "firebase"):
+            raise ValueError("PUSH_BACKEND must be 'log' or 'firebase'")
+        if self.PUSH_BACKEND == "firebase":
+            path = self.FIREBASE_CREDENTIALS_PATH
+            if path is None or not path.is_file() or not os.access(path, os.R_OK):
+                raise ValueError("PUSH_BACKEND=firebase needs a readable FIREBASE_CREDENTIALS_PATH (service account JSON)")
+        return self
+
+    @property
+    def run_worker_in_app(self) -> bool:
+        return self.RUN_WORKER_IN_APP if self.RUN_WORKER_IN_APP is not None else self.APP_ENV == "development"
 
     @property
     def DATABASE_URL(self) -> str:

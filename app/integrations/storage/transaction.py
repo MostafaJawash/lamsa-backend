@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.integrations.storage import get_storage
 from app.integrations.storage.service import ImageService, SavedImage
+from app.shared.events import commit_and_publish
 from app.shared.exceptions import AppError, ErrorCode, ImageTooLargeError, InvalidImageError
 from app.shared.utils.uploads import file_too_large
 
@@ -46,7 +47,7 @@ class MediaTransaction:
 
     async def commit(self) -> None:
         try:
-            await self.session.commit()
+            await commit_and_publish(self.session)
         except BaseException:
             await self.discard()
             raise

@@ -106,6 +106,14 @@ class ErrorCode(StrEnum):
     ORDER_NOT_CANCELLABLE = "ORDER_NOT_CANCELLABLE"
     INVALID_STATUS_TRANSITION = "INVALID_STATUS_TRANSITION"
 
+    # Banners and notifications
+    BANNER_NOT_FOUND = "BANNER_NOT_FOUND"
+    BANNER_ORDER_MISMATCH = "BANNER_ORDER_MISMATCH"
+    NOTIFICATION_NOT_FOUND = "NOTIFICATION_NOT_FOUND"
+    NOTIFICATION_NOT_EDITABLE = "NOTIFICATION_NOT_EDITABLE"
+    INVALID_SCHEDULE = "INVALID_SCHEDULE"
+    INVALID_LINK = "INVALID_LINK"
+
 
 # Default short Arabic message per code, shown to the user by the app.
 MESSAGES: dict[ErrorCode, str] = {
@@ -185,6 +193,12 @@ MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.PRICE_CHANGED: "تغيّر مجموع الطلب. راجع السلة من جديد.",
     ErrorCode.ORDER_NOT_CANCELLABLE: "لا يمكن إلغاء هذا الطلب الآن.",
     ErrorCode.INVALID_STATUS_TRANSITION: "لا يمكن نقل الطلب إلى هذه الحالة.",
+    ErrorCode.BANNER_NOT_FOUND: "البانر غير موجود.",
+    ErrorCode.BANNER_ORDER_MISMATCH: "ترتيب البانرات يجب أن يحتوي كل البانرات مرة واحدة.",
+    ErrorCode.NOTIFICATION_NOT_FOUND: "الإشعار غير موجود.",
+    ErrorCode.NOTIFICATION_NOT_EDITABLE: "لا يمكن تعديل هذا الإشعار لأنه لم يعد مجدولاً.",
+    ErrorCode.INVALID_SCHEDULE: "وقت الإرسال غير صحيح: بعد دقيقة على الأقل وخلال ٩٠ يوماً.",
+    ErrorCode.INVALID_LINK: "الرابط غير صحيح.",
 }
 
 

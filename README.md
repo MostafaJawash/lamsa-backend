@@ -61,6 +61,8 @@ FLUSH PRIVILEGES;
 .\venv\Scripts\fastapi.exe dev app/main.py          # http://127.0.0.1:8000/docs
 ```
 
+In development, the API also runs the background worker (notifications, cart reminders, cleanup). In production, run the worker separately with `python -m app.workers.run` (see *Push notifications: Firebase and the worker*).
+
 Optional, development only (`APP_ENV=development`): a demo catalog built from the prototype (`docs/prototype/lamsa-presentation.html`). It contains 7 brands with logos, 19 products and one gift box, with placeholder images (one per color variant plus a general one), published through the normal service layer. Demo items use slugs `demo-…` and SKUs `DEMO-…`. The command is safe to re-run, and `--reset` removes only demo data.
 
 ```powershell
@@ -92,6 +94,7 @@ Create the first admin with one of these. The password is asked interactively an
 - Images go to a temporary `MEDIA_ROOT` per test.
 - MySQL FULLTEXT only sees committed rows, so the search tests (`tests/catalog/test_search.py`) really commit to `lamsa_test` and wipe the catalog and user tables afterwards.
 - The list, detail, facets and category tree endpoints have a query-budget test (6 or fewer SQL statements, independent of page size).
+- Pushes never leave the machine: a fake sender captures them, and background dispatch is off, so tests call the dispatcher themselves. The notification pipeline gets its own session inside the test transaction. Query-budget tests count its statements separately from the request's.
 
 ## Migrations
 
@@ -267,6 +270,12 @@ Every error, including validation errors and unexpected ones, has this shape:
 | 409 | `PRICE_CHANGED` | The total differs from `expected_total`; `details`: `{expected_total, total, cart}` |
 | 409 | `ORDER_NOT_CANCELLABLE` | The order can't be cancelled in its current status (`details.status`) |
 | 422 | `INVALID_STATUS_TRANSITION` | Not the next step of the workflow; `details`: `{from, to, allowed}` |
+| 404 | `NOTIFICATION_NOT_FOUND` | The notification isn't in your inbox (for admins: it doesn't exist) |
+| 409 | `NOTIFICATION_NOT_EDITABLE` | Edit, cancel or send-now on a campaign that is no longer `scheduled` (`details.status`) |
+| 422 | `INVALID_SCHEDULE` | `scheduled_at` is less than 1 minute or more than 90 days ahead (`details`: `{earliest, latest}`) |
+| 422 | `INVALID_LINK` | A banner or campaign link breaks the link rules (`details`: `{reason, link_type, value?}`) |
+| 404 | `BANNER_NOT_FOUND` | Unknown banner |
+| 422 | `BANNER_ORDER_MISMATCH` | `banner_ids` doesn't list every banner exactly once (`details.expected`) |
 
 `OUT_OF_STOCK`, `INSUFFICIENT_STOCK` and `QUANTITY_LIMIT_EXCEEDED` are also used as cart **line issue** codes (same meaning, see below). `PRODUCT_NOT_FOUND` and `VARIANT_NOT_FOUND` (404) are reused by the cart for hidden products and missing or inactive variants.
 
@@ -508,7 +517,135 @@ Stock is taken when the order is placed and given back when it's cancelled. If t
 - **Cancelling:** `POST /admin/orders/{id}/cancel {reason (3–255 characters), restore_stock=true}` works from `pending`, `preparing`, `shipped` or `ready_for_pickup`. Use `restore_stock=false` only for `shipped` orders whose goods are lost or not returned.
 - **Stats:** `GET /admin/orders/stats?date_from=&date_to=` returns counts per status, `delivered_revenue`, `average_order_value`, `cancelled_rate` and the top 5 products by quantity (delivered orders only).
 
-Domain events (`OrderPlaced`, `OrderStatusChanged`, `OrderCancelled`, `StockLow`) are published in-process after each commit (`app/shared/events`). Currently they're only logged; push notifications will subscribe to them.
+Domain events (`OrderPlaced`, `OrderStatusChanged`, `OrderCancelled`, `StockLow`, `StockOut`, `ProductBackInStock` and `ProductPriceDropped`) are published in-process after each commit (`app/shared/events`, `commit_and_publish`). Nothing is published for a transaction that rolled back. The notification handlers subscribe to these events (see below).
+
+## Notifications for app developers
+
+Every notification is a row in the user's **inbox**. It is also pushed (FCM) to each of the user's registered devices (`POST /users/me/devices`). A user without devices still gets the inbox row.
+
+### What is sent, and when
+
+| `type` | Who | When | Title (Arabic, from `app/modules/notifications/templates.py`) |
+|---|---|---|---|
+| `order_update` | the customer | order placed | استلمنا طلبك #<id> ✅ |
+| | | preparing | طلبك #<id> قيد التجهيز |
+| | | shipped | طلبك #<id> انشحن 🚚 |
+| | | ready for pickup | طلبك #<id> جاهز للاستلام 🛍️ |
+| | | delivered (delivery / pickup) | وصل طلبك #<id>، نتمنى تعجبك المنتجات / تم استلام طلبك #<id>، شكراً إلك |
+| | | cancelled by the store | انلغى طلبك #<id> (the reason is the body) |
+| `admin_alert` | every **active** admin when the alert is created | new order | طلب جديد #<id> (items, total and delivery method in the body) |
+| | | customer cancelled | الزبون لغى الطلب #<id> |
+| | | stock low / out | <product> (<variant>): باقي <n> قطع / <product> (<variant>) خلص من المخزون |
+| `marketing` | everyone | an admin campaign | (written by the admin) |
+| `message` | one user | an admin message | (written by the admin) |
+| `favorite_back_in_stock` | fans of the product | it is in stock again | رجع للمخزون 🎉 |
+| `favorite_price_drop` | fans of the product | a sale starts, or `price_from` drops by at least `price_drop_min_percent` (5) | نزل السعر 🔥 |
+| `cart_reminder` | the cart owner | `cart_reminder_after_hours` (24) after the last cart change, with no order since | سلتك ناطرتك 🛍️ (the body names the first available product and the number of other lines) |
+
+Rules:
+- When the **customer** cancels their own order, the customer gets nothing (the admins get an alert).
+- Favorite alerts have a cooldown of `favorite_alert_cooldown_days` (7) per kind and product.
+- A cart reminder is sent once per cart change. It isn't sent when the cart has been left alone for more than 72 hours past the reminder time, or when nothing in it can be bought right now.
+
+### Preferences and quiet hours
+
+`GET /users/me/notification-preferences` returns the switches. `PATCH` it with any of `notify_marketing`, `notify_favorites` and `notify_cart_reminders` (all true by default). Order updates can't be switched off, so `order_updates` is always true. When `notify_marketing` is off, marketing is also **hidden from the inbox**.
+
+**Quiet hours** run from 21:00 to 09:00 Europe/Berlin, including daylight saving time (store settings `quiet_hours_start`, `quiet_hours_end` and `timezone`). They apply to marketing, favorite alerts and cart reminders, which are held until the next 09:00. Order updates, admin alerts and one-user messages are never held back.
+
+### Inbox endpoints
+
+| Endpoint | |
+|---|---|
+| `GET /notifications?page=&page_size=` | `{items, page, page_size, total, unread_count}`, newest first. Item: `{id, type, title, body, link {type, value}, order_id, sent_at, is_read, read_at}` |
+| `GET /notifications/unread-count` | `{unread_count}`, for the badge |
+| `POST /notifications/{id}/read` | Idempotent; returns `{unread_count}`. `404 NOTIFICATION_NOT_FOUND` if it isn't in your inbox |
+| `POST /notifications/read-all` | Returns `{unread_count: 0}` |
+
+If a link's target (product, category or brand) has been hidden since, the link is shown as `{type: "none"}` and the text stays.
+
+### Push payload and deep links
+
+Every push has a `notification` (title and body) and this `data`. All values are strings, and empty when not set:
+
+```json
+{"notification_id": "123", "type": "order_update", "link_type": "order", "link_value": "45", "order_id": "45"}
+```
+
+| `link_type` | Open |
+|---|---|
+| `none` | the inbox (for `cart_reminder`, open the cart) |
+| `product` / `category` / `brand` | that screen; `link_value` is the slug |
+| `new` / `sale` | the new-arrivals / sale list |
+| `url` | `link_value` (always https) in the browser |
+| `order` | the customer's order `link_value` (always one of the recipient's own orders) |
+| `admin_order` / `admin_product` | the admin app's order / product screen (only ever sent to admins) |
+
+- **Delivery is at least once.** After a crash, a push may arrive twice. **The app must ignore a push whose `notification_id` it has already shown.** Test pushes from `POST /admin/notifications/test` have an empty `notification_id` and `"test": "1"`.
+- **Android channels:** create `orders` (high importance, for order updates and admin alerts) and `marketing` (everything else). Every push sets its `channel_id`.
+- **iOS:** the sound is `default`, and `badge` is the unread count including this notification.
+- After the user opens a push, call `POST /notifications/{notification_id}/read`.
+
+## Banners for app developers
+
+`GET /banners` (public) returns at most 10 active banners within their time window, in the admin's order: `[{id, title, subtitle, image {thumb, medium, large}, link {type, value}}]`. Banners that link to a hidden product, category or brand are skipped. Links use the catalog types from the table above: `none`, `product`, `category`, `brand`, `new`, `sale` and `url`.
+
+## Admin campaigns and banners
+
+**Campaigns:** `POST /admin/notifications {audience, user_id?, title (≤150), body (≤500), link? {type, value}, scheduled_at?}`.
+- `audience: "all"` sends `marketing` to everyone who has `notify_marketing` on. `audience: "user"` with a `user_id` sends a `message` to that one user.
+- Without `scheduled_at` it goes out now. A `scheduled_at` must be 1 minute to 90 days ahead (`422 INVALID_SCHEDULE`). Times are UTC unless you give an offset, as in `2026-07-02T10:00:00+02:00`.
+- Marketing that would go out during quiet hours is moved to their end. The response then has `status: "scheduled"`, the new `scheduled_at` and `deferred_by_quiet_hours: true`.
+- Links use catalog types only:
+  - `category`, `product` and `brand` need an existing slug;
+  - `url` must be https and at most 255 characters;
+  - `none`, `new` and `sale` take no value.
+
+  Anything else returns `422 INVALID_LINK`.
+- `GET /admin/notifications?status=&type=&audience=` lists campaigns (marketing and message; pass `type` to see other kinds). Once a campaign is sent, it shows `recipients_count`, `success_count` and `failure_count`. `GET /admin/notifications/{id}` returns one campaign.
+- While a campaign is `scheduled`, you can edit it with `PATCH` (title, body, link, scheduled_at), cancel it with `POST /{id}/cancel`, or send it with `POST /{id}/send-now`. Send-now goes out right away, even during quiet hours. In any other status these return `409 NOTIFICATION_NOT_EDITABLE`.
+- `POST /admin/notifications/test {title?, body?}` pushes to **your own devices only** and creates no inbox row. It returns the result for each device (`OK`, `UNREGISTERED`, …), which is a quick way to check the Firebase setup.
+
+**Banners:** `GET /admin/banners` lists all banners with their `state`: `inactive`, `scheduled`, `active` or `expired`.
+- `POST /admin/banners` is a multipart form:
+  - `image` (required; JPEG, PNG or WEBP);
+  - `title`;
+  - optional: `subtitle`, `link_type`, `link_value`, `is_active` (`true`/`false`, default true), and `starts_at` / `ends_at` (UTC).
+
+  A new banner goes to the end of the order.
+- `PATCH /admin/banners/{id}` takes JSON; `null` clears `subtitle`, `starts_at` and `ends_at`. `PUT /admin/banners/{id}/image` replaces the image, and `DELETE /admin/banners/{id}` deletes the banner. Old image files are removed only after the database change is committed.
+- `PUT /admin/banners/order {banner_ids}` must list every banner exactly once, or it returns `422 BANNER_ORDER_MISMATCH`.
+
+## Push notifications: Firebase and the worker
+
+**How it works:**
+1. Events (order placed, status changed, stock low, back in stock, …) are published only after their transaction commits.
+2. Handlers write the notification rows (an outbox) in their own transaction and start a background send. Pushing never happens inside a request's transaction, and a failed push never fails a request.
+3. The **dispatcher** claims due rows with `FOR UPDATE SKIP LOCKED`, so two workers never send the same row. It pushes in batches of 500 and stores the counts.
+4. Tokens that FCM reports as `UNREGISTERED`, `INVALID_ARGUMENT` or `SENDER_ID_MISMATCH` are deleted. `UNAVAILABLE` and `INTERNAL` errors are retried once.
+5. If a worker crashes while sending, the row stays in `sending`. After 10 minutes it is queued again.
+
+**The worker** runs the periodic jobs:
+- dispatch every 30 s;
+- recover stuck rows every 5 min;
+- cart reminders every 15 min (one worker at a time, through a MySQL `GET_LOCK`);
+- a daily cleanup of inbox rows older than `notifications_retention_days` (180).
+
+In production, run it as its own process. It stops gracefully on SIGTERM:
+
+```powershell
+.\venv\Scripts\python.exe -m app.workers.run
+```
+
+`RUN_WORKER_IN_APP=true` makes the API process run the worker itself, so `fastapi dev` is enough locally. It defaults to true only when `APP_ENV=development`. In production, set it to false and run one or more worker processes.
+
+**Firebase setup:**
+1. In the Firebase console, open *Project settings → Service accounts → Generate new private key*.
+2. Save the JSON file in `secrets/`, for example `secrets/firebase-service-account.json`. The folder is git-ignored; **never commit the file**.
+3. In `.env`, set `PUSH_BACKEND=firebase` and `FIREBASE_CREDENTIALS_PATH=./secrets/<file>.json`. With `PUSH_BACKEND=firebase`, the app refuses to start if the file is missing or unreadable.
+4. Sign in to the admin app on a phone and call `POST /admin/notifications/test`.
+
+With `PUSH_BACKEND=log` (the default), pushes are only written to the log. Use it for development without Firebase. Tests always use a fake sender.
 
 ## Admin catalog workflow
 

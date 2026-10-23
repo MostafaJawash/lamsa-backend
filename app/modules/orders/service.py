@@ -46,7 +46,7 @@ from app.modules.products.validation import variant_label
 from app.modules.users.models import User
 from app.shared.catalog import field_error
 from app.shared.dependencies.pagination import Page, PageParams
-from app.shared.events import EventBuffer, OrderCancelled, OrderPlaced, OrderStatusChanged
+from app.shared.events import EventBuffer, OrderCancelled, OrderPlaced, OrderStatusChanged, commit_and_publish
 from app.shared.exceptions import Conflict, ErrorCode, NotFound, ValidationFailed
 from app.shared.money import format_money
 from app.shared.schemas import image_urls
@@ -141,7 +141,7 @@ async def cancel_order(
         order_id=order.id, from_status=previous, to_status=OrderStatus.cancelled, changed_by_user_id=actor_id,
         note=reason, created_at=clock.utcnow(),
     ))
-    events.add(OrderCancelled(order_id=order.id, user_id=order.user_id, by=by, stock_restored=restore_stock))
+    events.add(OrderCancelled(order_id=order.id, user_id=order.user_id, by=by, stock_restored=restore_stock, reason=reason))
 
 
 # ============================================================================== customer
@@ -167,9 +167,7 @@ class OrderService:
 
         async def operation() -> PlacedOrder:
             self.events.clear()
-            result = await self._place(cart, data, key)
-            await self.events.publish()
-            return result
+            return await self._place(cart, data, key)
 
         # Retried once on a deadlock or a duplicate Idempotency-Key race (the retry then finds
         # the order committed by the parallel request and returns it).
@@ -181,7 +179,7 @@ class OrderService:
         if key is not None:
             existing = await repo.order_by_key(self.session, self.user_id, key)
             if existing is not None:
-                await self.session.commit()
+                await commit_and_publish(self.session, self.events)
                 return PlacedOrder(await self.get(existing.id), created=False)
         if not refs:
             raise ValidationFailed(ErrorCode.CART_EMPTY)
@@ -253,7 +251,8 @@ class OrderService:
         self.session.add(order)
         await self.session.flush()
         items = self._items(order.id, snapshot)
-        await self.session.execute(insert(OrderItem), [self._item_row(i) for i in items])
+        # One multi-row INSERT ... VALUES (an executemany would be split per NULL-column pattern).
+        await self.session.execute(insert(OrderItem).values([self._item_row(i) for i in items]))
         self.session.add(OrderStatusHistory(
             order_id=order.id, from_status=None, to_status=OrderStatus.pending, changed_by_user_id=self.user_id,
             created_at=now,
@@ -261,13 +260,18 @@ class OrderService:
 
         # 11-12. Empty the cart; recalculate summaries (and the bundles containing them).
         await cart_repo.delete_lines(self.session, self.user_id)
+        await cart_repo.touch_cart(self.session, self.user_id, now)
         await recalculate_product_summary(self.session, needs.product_ids | bundle_ids)
-        await self.session.commit()
 
-        # 13. Events (published by place() after this returns, i.e. after the commit).
-        self.events.add(OrderPlaced(order_id=order.id, user_id=self.user_id, total=format_money(total)))
+        # 13. Events, published only after the commit succeeded.
+        self.events.add(OrderPlaced(
+            order_id=order.id, user_id=self.user_id, total=format_money(total),
+            items_count=sum(i.quantity for i in items), delivery_method_name=method.name,
+            is_pickup=address is None,
+        ))
         for event in low_stock:
             self.events.add(event)
+        await commit_and_publish(self.session, self.events)
         history = [workflow.HistoryEntry(OrderStatus.pending, now)]
         slugs = {r.product_id: r.slug for r in snapshot.rows}
         detail = OrderDetailOut(**detail_out(order, items, history, slugs, can_cancel=True))
@@ -351,8 +355,7 @@ class OrderService:
             raise Conflict(ErrorCode.ORDER_NOT_CANCELLABLE, details={"status": order.status.value})
         await cancel_order(self.session, order, actor_id=self.user_id, by="customer",
                            reason=_blank_to_none(reason), restore_stock=True, events=self.events)
-        await self.session.commit()
-        await self.events.publish()
+        await commit_and_publish(self.session, self.events)
         return await self.get(order_id)
 
     async def reorder(self, order_id: int) -> CartMergeOut:
@@ -441,9 +444,9 @@ class AdminOrderService:
             note=_blank_to_none(note), created_at=clock.utcnow(),
         ))
         self.events.add(OrderStatusChanged(order_id=order.id, user_id=order.user_id, from_status=previous.value,
-                                           to_status=to_status.value, changed_by_user_id=self.admin_id))
-        await self.session.commit()
-        await self.events.publish()
+                                           to_status=to_status.value, changed_by_user_id=self.admin_id,
+                                           is_pickup=is_pickup(order)))
+        await commit_and_publish(self.session, self.events)
         return await self.get(order_id)
 
     async def cancel(self, order_id: int, reason: str, restore_stock: bool) -> AdminOrderDetailOut:
@@ -456,8 +459,7 @@ class AdminOrderService:
             raise field_error("restore_stock", "stock can only be kept off (lost goods) for shipped orders")
         await cancel_order(self.session, order, actor_id=self.admin_id, by="admin", reason=reason,
                            restore_stock=restore_stock, events=self.events)
-        await self.session.commit()
-        await self.events.publish()
+        await commit_and_publish(self.session, self.events)
         return await self.get(order_id)
 
     async def stats(self, date_from: date | None, date_to: date | None) -> OrderStats:

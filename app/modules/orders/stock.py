@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.orders.models import OrderItem
 from app.modules.products.models import BundleItem, Product, ProductVariant
-from app.shared.events import StockLow
+from app.shared.events import DomainEvent, StockLow, StockOut
 from app.shared.exceptions import insufficient_stock
 
 logger = logging.getLogger(__name__)
@@ -93,9 +93,10 @@ def _case(values: Mapping[int, int], model_id: Any) -> Any:
 
 async def deduct(
     session: AsyncSession, needs: StockNeeds, locked: LockedStock, threshold: int
-) -> list[StockLow]:
+) -> list[DomainEvent]:
     """Take stock in ONE UPDATE per table. Raises INSUFFICIENT_STOCK (409) if anything is short.
-    Returns StockLow events for rows that crossed the low-stock threshold."""
+    Returns StockLow events for rows that crossed the low-stock threshold and StockOut events for
+    rows that reached 0."""
     for product_id, quantity in sorted(needs.products.items()):
         available = locked.products.get(product_id) or 0
         if available < quantity:
@@ -124,16 +125,15 @@ async def deduct(
         )
         _check_rowcount(result, len(needs.variants), "variants")
 
-    events: list[StockLow] = []
-    for product_id, quantity in needs.products.items():
-        before = locked.products.get(product_id) or 0
-        if before > threshold >= before - quantity:
-            events.append(StockLow(product_id=product_id, variant_id=None, stock=before - quantity, threshold=threshold))
-    for variant_id, quantity in needs.variants.items():
-        before = locked.variants.get(variant_id, 0)
-        if before > threshold >= before - quantity:
-            events.append(StockLow(product_id=needs.variant_product[variant_id], variant_id=variant_id,
-                                   stock=before - quantity, threshold=threshold))
+    events: list[DomainEvent] = []
+    changes = [(p, None, locked.products.get(p) or 0, q) for p, q in needs.products.items()]
+    changes += [(needs.variant_product[v], v, locked.variants.get(v, 0), q) for v, q in needs.variants.items()]
+    for product_id, variant_id, before, quantity in changes:
+        after = before - quantity
+        if after == 0:
+            events.append(StockOut(product_id=product_id, variant_id=variant_id))
+        elif before > threshold >= after:
+            events.append(StockLow(product_id=product_id, variant_id=variant_id, stock=after, threshold=threshold))
     return events
 
 
