@@ -498,7 +498,8 @@ Stock is taken when the order is placed and given back when it's cancelled. If t
 ## Admin order workflow
 
 `GET /admin/orders?status=&delivery_method=&q=&date_from=&date_to=&sort=newest|oldest|total_desc`:
-- `q` is the order number when it's purely digits; otherwise it matches part of the customer's name or phone. To search by phone, type it with `+` (for example `+49151…`).
+- **Numeric `q`** (digits, ignoring spaces, `+`, `-` and brackets) matches the **order number exactly** *or* a **customer phone containing those digits**. Leading zeros are ignored for the phone, so `6773`, `0151 23456773`, `+49 151 23456773` and `0049-151-…` all find `+4915123456773`. An exact order-number match is always listed first, then the rest by the chosen sort.
+- **Any other `q`** matches part of the customer's name or phone.
 - Dates are **UTC**, and `date_to` is inclusive.
 
 `GET /admin/orders/{id}` returns the full detail plus `customer {user_id, name, phone, orders_count}`, `history` (who changed what, when, and the note), `allowed_next_statuses` and `can_cancel`.

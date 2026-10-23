@@ -128,8 +128,7 @@ async def test_admin_list_filters_and_sorts(
     assert ids(await listing(q=str(a["id"]))) == [a["id"]]
     assert ids(await listing(q="mona")) == [b["id"]]
     phone = (await client.get("/api/v1/users/me", headers=other)).json()["phone"]
-    assert ids(await listing(q=phone)) == [b["id"]]  # "+49..." is not numeric: phone search
-    assert ids(await listing(q=phone[-4:])) == []  # purely numeric: treated as an order number
+    assert ids(await listing(q=phone)) == [b["id"]]
     today = clock.utcnow().date()
     assert ids(await listing(date_from=str(today), date_to=str(today))) == [b["id"]]  # date_to inclusive
     assert ids(await listing(date_to=str(today - timedelta(days=1)))) == [a["id"]]
@@ -159,3 +158,45 @@ async def test_stats(client: AsyncClient, admin_headers: dict, customer_headers:
     empty = ok(await client.get(f"{ADMIN_ORDERS}/stats", params={"date_from": tomorrow}, headers=admin_headers))
     assert (empty["orders_count"], empty["delivered_revenue"], empty["cancelled_rate"]) == (0, "0.00", 0.0)
     assert ok(await client.get(f"{ORDERS}/{o1['id']}", headers=customer_headers))["status"] == "delivered"
+
+
+# ------------------------------------------------------------------ numeric search
+
+
+@pytest.fixture
+async def two_orders(client: AsyncClient, customer_headers: dict, shop: dict, db_session: AsyncSession) -> dict[str, Any]:
+    first = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)], method="pickup")
+    other = bearer((await register(client, 73, name="Rana"))["access_token"])
+    second = await order_from_cart(client, other, [(shop["simple"]["id"], None, 1)], method="pickup")
+    phone = "+4915123456773"  # register(73)
+    return {"first": first, "second": second, "phone": phone}
+
+
+async def search(client: AsyncClient, admin: dict, q: str, **params: Any) -> list[int]:
+    page = ok(await client.get(ADMIN_ORDERS, params={"q": q, **params}, headers=admin))
+    return [o["id"] for o in page["items"]]
+
+
+async def test_numeric_q_exact_order_number(client: AsyncClient, admin_headers: dict, two_orders: dict) -> None:
+    assert await search(client, admin_headers, str(two_orders["first"]["id"])) == [two_orders["first"]["id"]]
+
+
+@pytest.mark.parametrize("q", ["6773", "0151 23456773", "015123456773", "+49 151 23456773", "+4915123456773", "0049-151-234-567-73"])
+async def test_numeric_q_matches_phone_formats(client: AsyncClient, admin_headers: dict, two_orders: dict, q: str) -> None:
+    assert await search(client, admin_headers, q) == [two_orders["second"]["id"]], q
+
+
+async def test_numeric_q_matching_both_puts_exact_order_first(
+    client: AsyncClient, admin_headers: dict, two_orders: dict, db_session: AsyncSession
+) -> None:
+    first_id = two_orders["first"]["id"]
+    # Make the second order's phone snapshot contain the first order's number.
+    await db_session.execute(update(Order).where(Order.id == two_orders["second"]["id"]).values(customer_phone=f"+49151{first_id}99"))
+    await db_session.commit()
+    for sort in ("newest", "oldest", "total_desc"):
+        assert await search(client, admin_headers, str(first_id), sort=sort) == [first_id, two_orders["second"]["id"]], sort
+
+
+async def test_numeric_q_no_match(client: AsyncClient, admin_headers: dict, two_orders: dict) -> None:
+    assert await search(client, admin_headers, "987654") == []
+    assert await search(client, admin_headers, "000") == []

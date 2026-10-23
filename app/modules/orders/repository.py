@@ -1,12 +1,13 @@
 """Order queries. Each function is ONE SQL statement."""
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, and_, case, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.delivery.models import DeliveryMethod
@@ -110,6 +111,39 @@ def _summary_select(*extra: Any) -> Select[Any]:
     )
 
 
+PHONE_SEPARATORS = re.compile(r"[\s+\-().]")
+MAX_ORDER_ID = 2**63 - 1
+
+
+@dataclass(frozen=True)
+class OrderQuery:
+    """Admin search text, normalized once.
+
+    Numeric input (digits, ignoring spaces, +, -, brackets and dots) matches the order number
+    exactly OR the customer phone containing those digits. Leading zeros are dropped for the
+    phone comparison, so local "0151 2345 6772" and "0049 151..." match "+49151...".
+    """
+
+    text: str
+    is_numeric: bool
+    order_id: int | None
+    phone_digits: str
+
+
+def parse_order_query(q: str) -> OrderQuery:
+    text = q.strip()
+    digits = PHONE_SEPARATORS.sub("", text)
+    if not digits.isdigit():
+        return OrderQuery(text=text, is_numeric=False, order_id=None, phone_digits="")
+    number = int(digits)
+    return OrderQuery(
+        text=text,
+        is_numeric=True,
+        order_id=number if 0 < number <= MAX_ORDER_ID else None,
+        phone_digits=digits.lstrip("0"),
+    )
+
+
 def utc_range(date_from: date | None, date_to: date | None) -> list[Any]:
     """created_at is UTC; date_to is inclusive (the whole day)."""
     conditions: list[Any] = []
@@ -142,20 +176,34 @@ async def list_orders(
         conditions.append(Order.status == status)
     if delivery_method:
         conditions.append(Order.delivery_method_code == delivery_method)
+    exact_first: list[Any] = []
     if q:
-        text = q.strip()
-        if text.isdigit():
-            conditions.append(Order.id == int(text))
+        search = parse_order_query(q)
+        if search.is_numeric:
+            matches = []
+            if search.order_id is not None:
+                matches.append(Order.id == search.order_id)
+                # Exact order-number match first, then the chosen sort.
+                exact_first = [case((Order.id == search.order_id, 0), else_=1)]
+            if search.phone_digits:
+                # customer_phone is E.164 ("+49..."): compare digits only.
+                matches.append(func.replace(Order.customer_phone, "+", "").contains(search.phone_digits, autoescape=True))
+            conditions.append(or_(*matches) if matches else false())
         else:
             conditions.append(
-                or_(Order.customer_name.contains(text, autoescape=True), Order.customer_phone.contains(text, autoescape=True))
+                or_(Order.customer_name.contains(search.text, autoescape=True),
+                    Order.customer_phone.contains(search.text, autoescape=True))
             )
     order_by = {
         OrderSort.newest: [Order.created_at.desc(), Order.id.desc()],
         OrderSort.oldest: [Order.created_at.asc(), Order.id.asc()],
         OrderSort.total_desc: [Order.total.desc(), Order.id.desc()],
     }[sort]
-    rows = (await session.execute(_summary_select().where(*conditions).order_by(*order_by).offset(offset).limit(limit))).all()
+    rows = (
+        await session.execute(
+            _summary_select().where(*conditions).order_by(*exact_first, *order_by).offset(offset).limit(limit)
+        )
+    ).all()
     return list(rows), conditions
 
 
