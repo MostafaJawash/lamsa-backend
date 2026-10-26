@@ -35,7 +35,8 @@ async def lifespan(app: FastAPI):
             "TRUST_PROXY_HEADERS is deprecated and trusts X-Forwarded-For from ANY peer. Set "
             "TRUSTED_PROXY_IPS to your Nginx / website server addresses instead."
         )
-    logger.info("Client IP: %s", client_ip_policy())
+    # Uvicorn's logger: the API configures no handlers of its own, so "app" INFO lines are dropped.
+    logging.getLogger("uvicorn.error").info("Client IP: %s", client_ip_policy())
     # Connect the cache (best effort) and bump the catalog version: a fresh deploy never serves
     # entries written by the previous code.
     await start_cache()
