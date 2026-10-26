@@ -17,6 +17,7 @@ from app.db.session import engine
 from app.integrations.storage import get_storage
 from app.modules.notifications import handlers as notification_handlers
 from app.shared import catalog_cache
+from app.shared.dependencies.request import client_ip_policy
 from app.workers.runner import Worker
 
 logger = logging.getLogger("app")
@@ -29,6 +30,12 @@ async def lifespan(app: FastAPI):
             "GOOGLE_DEV_MODE is ON: tokens like 'dev-google|<sub>|<email>|<name>' are accepted "
             "without Google. Never enable this outside local development."
         )
+    if settings.TRUST_PROXY_HEADERS and not settings.TRUSTED_PROXY_IPS:
+        logger.warning(
+            "TRUST_PROXY_HEADERS is deprecated and trusts X-Forwarded-For from ANY peer. Set "
+            "TRUSTED_PROXY_IPS to your Nginx / website server addresses instead."
+        )
+    logger.info("Client IP: %s", client_ip_policy())
     # Connect the cache (best effort) and bump the catalog version: a fresh deploy never serves
     # entries written by the previous code.
     await start_cache()

@@ -8,8 +8,8 @@
      users over them, like Nginx over upstreams; on Windows, one `uvicorn --workers 4` hands
      nearly every connection to the same process) and the separate worker process, with
      DB_NAME=lamsa_load, PUSH_BACKEND=log, RUN_WORKER_IN_APP=false, APP_ENV=production.
-     TRUST_PROXY_HEADERS=true is set HERE ONLY, so Locust can send one fake client IP per
-     simulated user (never enable it in production unless a trusted proxy overwrites the header).
+     TRUSTED_PROXY_IPS=127.0.0.1,::1 is set HERE ONLY, so Locust (on localhost) can send one fake
+     client IP per simulated user (in production, list only the Nginx and website server IPs).
   3. Runs Locust headless (1 master + 4 worker processes) in four phases:
        browse     AnonymousBrowser / LoggedInBrowser / Shopper at 50, 200, 500, 1000 users
        flash      300 FlashBuyer at once for a product with stock 50, then verified in the database
@@ -44,7 +44,8 @@ $env:DEBUG = "false"
 $env:GOOGLE_DEV_MODE = "false"
 $env:PUSH_BACKEND = "log"
 $env:RUN_WORKER_IN_APP = "false"
-$env:TRUST_PROXY_HEADERS = "true"      # load test only: Locust sends fake X-Forwarded-For per user
+$env:TRUSTED_PROXY_IPS = "127.0.0.1,::1"  # load test only: Locust sends fake X-Forwarded-For per user
+$env:TRUST_PROXY_HEADERS = "false"
 $env:MEDIA_ROOT = "./media-load"
 $env:MEDIA_URL = "http://127.0.0.1:$Port/media"
 $env:CACHE_ENABLED = if ($Cache -eq "on") { "true" } else { "false" }
@@ -78,7 +79,7 @@ $apis = @()
 foreach ($p in $Ports) {
     $apis += Start-Process -FilePath $Py -PassThru -NoNewWindow `
         -ArgumentList "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "$p",
-                      "--no-access-log", "--log-config", "loadtest/logging.json", "--timeout-keep-alive", "15" `
+                      "--no-proxy-headers", "--no-access-log", "--log-config", "loadtest/logging.json", "--timeout-keep-alive", "15" `
         -RedirectStandardOutput "$Out\api-$p.log" -RedirectStandardError "$Out\api-$p.err.log"
 }
 $worker = Start-Process -FilePath $Py -PassThru -NoNewWindow -ArgumentList "-m", "app.workers.run" `

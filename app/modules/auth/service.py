@@ -122,6 +122,7 @@ async def issue_tokens(
         access_token=security.create_access_token(user.id, user.role.value, token.family_id),
         refresh_token=raw,
         expires_in=settings.ACCESS_TOKEN_MINUTES * 60,
+        refresh_expires_in=settings.REFRESH_TOKEN_DAYS * 24 * 60 * 60,
         user=UserOut.model_validate(user),
     )
     return pair, token

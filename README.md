@@ -57,7 +57,8 @@ FLUSH PRIVILEGES;
 | `GOOGLE_DEV_MODE` | `false` | accept fake Google tokens; **only with `APP_ENV=development`** (the app refuses to start otherwise) |
 | `DEFAULT_PHONE_REGION` | `DE` | region for phone numbers written without country code |
 | `CORS_ORIGINS` | `http://localhost:3000,...` | comma separated |
-| `TRUST_PROXY_HEADERS` | `false` | set `true` only behind your own reverse proxy that overwrites `X-Forwarded-For` (client IP for rate limits). **Never** enable it when clients can reach the API directly |
+| `TRUSTED_PROXY_IPS` | empty | comma-separated IPs/CIDRs (v4 or v6) of **our** proxies: Nginx and the website server. `X-Forwarded-For` is read only from these peers (see *Client IP behind proxies*). Empty: trust nobody, use the socket address. Invalid entries stop the app at startup. Local development with the website: `127.0.0.1,::1` |
+| `TRUST_PROXY_HEADERS` | `false` | **deprecated**, removed in the next release. With `TRUSTED_PROXY_IPS` empty, `true` keeps the old behaviour (first `X-Forwarded-For` entry from any peer) and logs a warning |
 | `CACHE_ENABLED`, `CACHE_URL`, `CACHE_KEY_PREFIX`, `CACHE_TIMEOUT_MS` | `true`, `redis://127.0.0.1:6379/0`, `lamsa:`, `1000` | Valkey cache (see *Performance*) |
 | `PASSWORD_HASH_CONCURRENCY`, `PASSWORD_HASH_QUEUE_TIMEOUT` | cores, `5` | hashes at once per process; seconds to wait before 503 SERVICE_BUSY |
 | `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT`, `DB_POOL_RECYCLE` | `10`, `10`, `5`, `3600` | database pool per process (see *Production tuning*) |
@@ -69,8 +70,10 @@ FLUSH PRIVILEGES;
 .\venv\Scripts\python.exe -m scripts.init_storage   # create MEDIA_ROOT
 .\venv\Scripts\alembic.exe upgrade head             # create / update tables
 .\venv\Scripts\python.exe -m scripts.seed_base      # categories, delivery methods, settings (safe to re-run)
-.\venv\Scripts\fastapi.exe dev app/main.py          # http://127.0.0.1:8000/docs
+.\venv\Scripts\fastapi.exe dev app/main.py --no-proxy-headers   # http://127.0.0.1:8000/docs
 ```
+
+Always start the API with `--no-proxy-headers` (`fastapi dev/run`, `uvicorn`). Otherwise Uvicorn itself rewrites the client address from `X-Forwarded-For` for requests from `127.0.0.1`, before `TRUSTED_PROXY_IPS` is applied. The startup log shows the effective policy (`Client IP: ...`).
 
 In development, the API also runs the background worker (notifications, cart reminders, cleanup). In production, run the worker separately with `python -m app.workers.run` (see *Push notifications: Firebase and the worker*).
 
@@ -135,6 +138,7 @@ Every successful sign-in returns a **TokenPair**:
   "refresh_token": "Yq3...",
   "token_type": "bearer",
   "expires_in": 900,
+  "refresh_expires_in": 5184000,
   "user": {"id": 1, "name": "ليلى", "phone": "+4915123456789", "email": null, "role": "customer",
            "auth_provider": "phone", "must_change_password": false, "created_at": "2026-10-22T17:00:00"}
 }
@@ -145,6 +149,7 @@ Every successful sign-in returns a **TokenPair**:
   - `POST /auth/refresh {refresh_token}` returns a new pair. Store the new refresh token immediately.
   - **Send only one refresh request at a time.** Queue other API calls until the refresh finishes. A duplicate within 20 seconds is tolerated as a safety net, not as the normal mechanism.
   - Reusing an old refresh token after that is treated as theft, and all sessions from that login are ended (`TOKEN_REUSED`).
+- `refresh_expires_in` is the refresh token's lifetime in seconds (60 days). It was added later and is **additive**: apps that don't read it keep working. Use it for cookie or storage lifetimes; each refresh returns a fresh value.
 - When a call returns `401 TOKEN_EXPIRED`, refresh once and retry. If the refresh fails, send the user to the login screen.
 - Login and register bodies accept an optional `device_name` (for example `"iPhone 15"`). The user agent and IP are taken from the request.
 
@@ -800,13 +805,22 @@ The script:
    - **login:** a login burst;
    - **broadcast:** a campaign to all 10,000 users while browsing continues.
 
-`TRUST_PROXY_HEADERS=true` is set **inside the run script only**, so each simulated user can send its own fake client IP. **Never enable it in production unless the API is behind a trusted proxy that overwrites `X-Forwarded-For`** (as `docker/nginx/lamsa.conf` does).
+`TRUSTED_PROXY_IPS=127.0.0.1,::1` is set **inside the run script only**: Locust connects from localhost, so each simulated user can send its own fake client IP in `X-Forwarded-For`. In production, list only your Nginx and website server addresses.
 
 Results and their interpretation: `loadtest/RESULTS.md`.
 
+## Client IP behind proxies
+
+Login rate limits (20 failures per IP) and sessions use the client IP from `get_client_ip()` (`app/shared/dependencies/request.py`):
+
+1. The direct peer (socket address) is **not** in `TRUSTED_PROXY_IPS`: that address is the client; `X-Forwarded-For` is ignored. This is how the mobile apps reach the API directly: whatever they send can't change their IP.
+2. The peer **is** trusted: `X-Forwarded-For` is walked from right to left, skipping trusted addresses; the first untrusted address is the client (all trusted: the leftmost). Entries that aren't IPs are ignored. IPv4-mapped IPv6 addresses count as IPv4.
+
+Production: `TRUSTED_PROXY_IPS` lists **only** the Nginx address(es) and the website server(s) (when the website calls the API without Nginx), for example `TRUSTED_PROXY_IPS=10.0.0.5,10.0.0.6`. Never list a public range. The website (lamsa-web) sends the visitor's IP in `X-Forwarded-For`. In Nginx, `set_real_ip_from` must list only the website server and any load balancer in front of Nginx (see `docker/nginx/lamsa.conf`), so a mobile app going through Nginx can't spoof its IP either. Run Uvicorn with `--no-proxy-headers`.
+
 ## Production tuning
 
-- **Processes.** Run one Uvicorn worker per core, either `uvicorn app.main:app --workers 4 --proxy-headers --timeout-keep-alive 15` or Gunicorn with `-k uvicorn.workers.UvicornWorker -w 4`. Behind Nginx, keep-alive on both sides (`keepalive 32` upstream). Set `RUN_WORKER_IN_APP=false` and run `python -m app.workers.run` as its own service.
+- **Processes.** Run one Uvicorn worker per core, either `uvicorn app.main:app --workers 4 --no-proxy-headers --timeout-keep-alive 15` or Gunicorn with `-k uvicorn.workers.UvicornWorker -w 4 --forwarded-allow-ips ""` (so Uvicorn never rewrites the client address; `TRUSTED_PROXY_IPS` decides). Behind Nginx, keep-alive on both sides (`keepalive 32` upstream). Set `RUN_WORKER_IN_APP=false` and run `python -m app.workers.run` as its own service.
 - **Database connections:** workers × (`DB_POOL_SIZE` + `DB_MAX_OVERFLOW`) + worker process (≈ 20) + headroom for admin, backups and migrations (≈ 20) ≤ MySQL `max_connections`.
 
   Example, 4 cores: 4 × (10 + 10) + 20 + 20 = 120 → `max_connections = 150`.
@@ -822,7 +836,7 @@ Results and their interpretation: `loadtest/RESULTS.md`.
   - gzip;
   - `/media` with 1-year immutable caching;
   - per-IP rate limits (strict on login, register and Google sign-in) that return the API's JSON error format;
-  - `X-Forwarded-For` overwritten with the real client address.
+  - the real client address: `realip` resolves it from the website server's `X-Forwarded-For` (only from the addresses in `set_real_ip_from`), and `X-Forwarded-For` is then overwritten with it. Spoofed headers from anyone else are ignored.
 
   Try it locally with the commented `nginx` service in `docker-compose.yml` (profile `proxy`).
 
@@ -878,4 +892,4 @@ location /media/ {
 }
 ```
 
-Set `MEDIA_URL` to the public URL of that location, for example `https://lamsa.example/media`. Behind Nginx, set `TRUST_PROXY_HEADERS=true` and forward the client IP (`proxy_set_header X-Forwarded-For $remote_addr;`) so login rate limits see real IPs.
+Set `MEDIA_URL` to the public URL of that location, for example `https://lamsa.example/media`. Behind Nginx, set `TRUSTED_PROXY_IPS` to the Nginx address (see *Client IP behind proxies*) so login rate limits see real IPs.

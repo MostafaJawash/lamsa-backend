@@ -1,5 +1,6 @@
 import os
 from functools import lru_cache
+from ipaddress import ip_network
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote_plus
@@ -51,6 +52,11 @@ class Settings(BaseSettings):
 
     DEFAULT_PHONE_REGION: str = "DE"
     CORS_ORIGINS: CommaList = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    # Peers (IPs or CIDRs) whose X-Forwarded-For is read for the client IP: our Nginx and the
+    # website server only. Empty: trust nobody, use the socket address (see README).
+    TRUSTED_PROXY_IPS: CommaList = []
+    # Deprecated (one release): with TRUSTED_PROXY_IPS empty, true keeps the old behaviour (the
+    # first X-Forwarded-For entry from any peer) and logs a warning at startup.
     TRUST_PROXY_HEADERS: bool = False
 
     PUSH_BACKEND: str = "log"  # log | firebase
@@ -81,11 +87,21 @@ class Settings(BaseSettings):
     SLOW_QUERY_MS: int = 200
     SLOW_REQUEST_MS: int = 1000
 
-    @field_validator("GOOGLE_CLIENT_IDS", "CORS_ORIGINS", mode="before")
+    @field_validator("GOOGLE_CLIENT_IDS", "CORS_ORIGINS", "TRUSTED_PROXY_IPS", mode="before")
     @classmethod
     def _split_commas(cls, value: Any) -> Any:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("TRUSTED_PROXY_IPS")
+    @classmethod
+    def _valid_proxy_networks(cls, value: list[str]) -> list[str]:
+        for item in value:
+            try:
+                ip_network(item, strict=False)
+            except ValueError:
+                raise ValueError(f"TRUSTED_PROXY_IPS: {item!r} is not an IP address or CIDR") from None
         return value
 
     @field_validator("JWT_SECRET")

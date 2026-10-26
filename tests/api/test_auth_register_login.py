@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import security
+from app.core.config import settings
 from app.modules.auth.service import MAX_FAILED_PER_IP, MAX_FAILED_PER_PHONE
 from app.modules.users.models import User
 from conftest import (
@@ -30,6 +31,7 @@ async def test_register_success(client: AsyncClient) -> None:
 
     assert data["token_type"] == "bearer"
     assert data["expires_in"] == 15 * 60
+    assert data["refresh_expires_in"] == 60 * 24 * 60 * 60
     assert data["access_token"] and data["refresh_token"]
     user = data["user"]
     assert user["name"] == "ليلى"
@@ -205,6 +207,40 @@ async def test_login_rate_limit_per_ip(client_factory: ClientFactory, frozen_clo
 
     # Another IP is not affected.
     assert (await login(await client_factory("10.2.0.2"), 30, "Wrong-pass1")).status_code == 401
+
+
+async def test_login_rate_limit_counts_forwarded_ip_from_trusted_proxy(
+    client_factory: ClientFactory, frozen_clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Behind the website server (trusted), each visitor has their own IP bucket; a direct
+    client spoofing X-Forwarded-For still counts as its socket address."""
+    monkeypatch.setattr(settings, "TRUSTED_PROXY_IPS", ["10.9.0.1"])
+    website = await client_factory("10.9.0.1")
+    for i in range(MAX_FAILED_PER_IP):
+        response = await website.post(
+            "/api/v1/auth/login",
+            json={"phone": phone(40 + i % 4), "password": "Wrong-pass1"},
+            headers={"X-Forwarded-For": "198.51.100.1"},
+        )
+        assert response.status_code == 401
+    blocked = await website.post(
+        "/api/v1/auth/login", json={"phone": phone(45), "password": "Wrong-pass1"},
+        headers={"X-Forwarded-For": "198.51.100.1"},
+    )
+    assert error_code(blocked) == "TOO_MANY_ATTEMPTS"
+    other_visitor = await website.post(
+        "/api/v1/auth/login", json={"phone": phone(45), "password": "Wrong-pass1"},
+        headers={"X-Forwarded-For": "198.51.100.2"},
+    )
+    assert other_visitor.status_code == 401
+
+    spoofer = await client_factory("10.9.0.99")
+    for i in range(MAX_FAILED_PER_IP):
+        await spoofer.post(
+            "/api/v1/auth/login", json={"phone": phone(50 + i % 4), "password": "Wrong-pass1"},
+            headers={"X-Forwarded-For": f"198.51.100.{100 + i}"},
+        )
+    assert error_code(await login(spoofer, 55, "Wrong-pass1")) == "TOO_MANY_ATTEMPTS"
 
 
 async def test_successful_logins_do_not_count(client_factory: ClientFactory) -> None:

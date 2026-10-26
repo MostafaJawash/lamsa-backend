@@ -81,7 +81,7 @@ class LamsaUser(FastHttpUser):
         super().__init__(environment)
 
     def on_start(self) -> None:
-        # Load test only (run_loadtest.ps1 sets TRUST_PROXY_HEADERS=true): one fake client IP per user.
+        # Load test only (run_loadtest.ps1 trusts 127.0.0.1 in TRUSTED_PROXY_IPS): one fake client IP per user.
         self.ip = f"10.{random.randrange(256)}.{random.randrange(256)}.{random.randrange(1, 255)}"
         self.load_catalog()
 

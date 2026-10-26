@@ -61,6 +61,7 @@ TEST_SETTINGS = {
     "GOOGLE_DEV_MODE": "false",
     "GOOGLE_CLIENT_IDS": "",
     "TRUST_PROXY_HEADERS": "false",
+    "TRUSTED_PROXY_IPS": "",
     "STORAGE_BACKEND": "local",
     "PUSH_BACKEND": "log",  # never Firebase
     "RUN_WORKER_IN_APP": "false",

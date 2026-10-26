@@ -10,6 +10,7 @@ class TokenPair(BaseModel):
     refresh_token: str
     token_type: Literal["bearer"] = "bearer"
     expires_in: int = Field(description="Access token lifetime in seconds")
+    refresh_expires_in: int = Field(description="Refresh token lifetime in seconds")
     user: UserOut
 
 
