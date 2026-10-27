@@ -26,6 +26,15 @@ from catalog_helpers import (
 pytestmark = pytest.mark.anyio
 
 
+@pytest.fixture(autouse=True)
+async def show_out_of_stock(db_session: AsyncSession) -> None:
+    """These tests cover filters, facets and cards WITH out-of-stock products, so browsing shows
+    them here. catalog_hide_out_of_stock itself: test_catalog_hide_out_of_stock.py."""
+    db_session.add(StoreSetting(key="catalog_hide_out_of_stock", value=False))
+    await db_session.commit()
+    await bump_catalog()
+
+
 @pytest.fixture
 async def catalog(client: AsyncClient, admin_headers: dict[str, str]) -> dict[str, Any]:
     """Two-level tree with attributes of every filterable type, two brands, five products."""

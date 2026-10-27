@@ -65,10 +65,12 @@ def color_key_of(options: Mapping[str, Any]) -> str | None:
     return next((k for k in options if not k.endswith("_hex") and f"{k}_hex" in options), None)
 
 
-def swatches(variants: Sequence[LoadedVariant]) -> list[Swatch]:
+def swatches(variants: Sequence[LoadedVariant], *, in_stock_only: bool = False) -> list[Swatch]:
+    """Card color dots: active variants (with in_stock_only, only those with stock > 0)."""
     result: list[Swatch] = []
     seen: set[str] = set()
-    for v in sorted((v for v in variants if v.is_active), key=lambda v: (v.sort_order, v.id)):
+    shown = (v for v in variants if v.is_active and (not in_stock_only or v.stock > 0))
+    for v in sorted(shown, key=lambda v: (v.sort_order, v.id)):
         key = color_key_of(v.options)
         if key is None:
             continue
@@ -126,14 +128,16 @@ class CardRow:
     category: CategoryRef
 
 
-def build_card(row: CardRow, image_key: str | None, variants: Sequence[LoadedVariant]) -> ProductCardOut:
+def build_card(
+    row: CardRow, image_key: str | None, variants: Sequence[LoadedVariant], *, in_stock_swatches: bool = False
+) -> ProductCardOut:
     compare = compare_at(row.type, row.price, row.sale_price, variants)
     return ProductCardOut(
         id=row.id, slug=row.slug, name=row.name, type=row.type, brand=row.brand, category=row.category,
         image=image_urls(image_key), price=row.price_from, compare_at_price=compare,
         discount_percent=discount_percent(compare, row.price_from) if compare is not None else None,
         is_new=row.is_new, is_on_sale=row.is_on_sale, in_stock=row.in_stock,
-        swatches=swatches(variants) if row.type == ProductType.variable else [],
+        swatches=swatches(variants, in_stock_only=in_stock_swatches) if row.type == ProductType.variable else [],
     )
 
 

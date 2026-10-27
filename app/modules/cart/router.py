@@ -2,8 +2,17 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response, status
 
-from app.modules.cart.schemas import CartItemAdd, CartItemUpdate, CartMerge, CartMergeOut, CartOut
-from app.modules.cart.service import CartService
+from app.modules.cart.schemas import (
+    CartCountOut,
+    CartItemAdd,
+    CartItemUpdate,
+    CartMerge,
+    CartMergeOut,
+    CartOut,
+    CartPreview,
+    CartPreviewOut,
+)
+from app.modules.cart.service import CartPreviewService, CartService
 from app.shared.dependencies.auth import CurrentUser, DbSession
 
 router = APIRouter(prefix="/cart", tags=["cart"])
@@ -21,6 +30,21 @@ async def get_cart(service: Service) -> CartOut:
     """The cart with live prices, stock status, line issues and delivery quotes.
     The cart does not reserve stock; stock is taken only when an order is placed."""
     return await service.get()
+
+
+@router.get("/count", response_model=CartCountOut)
+async def cart_count(service: Service) -> CartCountOut:
+    """The badge numbers only: items_count and lines_count exactly as in GET /cart."""
+    return await service.count()
+
+
+@router.post("/preview", response_model=CartPreviewOut)
+async def preview_cart(data: CartPreview, session: DbSession) -> CartPreviewOut:
+    """Public (an Authorization header is ignored): the cart for items kept on a device (guests),
+    computed exactly like GET /cart without storing anything. Lines carry a `key`
+    ("<product_id>:<variant_id or 0>") instead of an id; unknown or hidden products come back as
+    UNAVAILABLE lines; the same product and variant twice become one line (notice LINES_MERGED)."""
+    return await CartPreviewService(session).preview(data.items)
 
 
 @router.post("/items", response_model=CartOut, status_code=status.HTTP_201_CREATED)

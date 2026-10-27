@@ -52,7 +52,7 @@ from app.modules.products.schemas import (
     VariantOut,
 )
 from app.modules.products.validation import variant_label
-from app.modules.settings.service import parse_int_setting
+from app.modules.settings.service import hide_out_of_stock, parse_int_setting
 from app.shared.dependencies.pagination import Page, PageParams
 from app.shared.exceptions import ErrorCode, NotFound
 from app.shared.schemas import image_urls
@@ -95,7 +95,8 @@ class CatalogProductService:
         category: Category | None = None
         filters = ProductFilters(
             brand_slugs=list(dict.fromkeys(query.brands)), min_price=query.min_price, max_price=query.max_price,
-            in_stock=query.in_stock, on_sale=query.on_sale, is_new=query.is_new,
+            in_stock=query.in_stock, hide_out_of_stock=await hide_out_of_stock(self.session),
+            on_sale=query.on_sale, is_new=query.is_new,
         )
         if query.category is not None:
             category = index.by_slug(query.category)
@@ -143,14 +144,29 @@ class CatalogProductService:
             items=await self.cards(rows, favorites), page=params.page, page_size=params.page_size, total=total
         )
 
+    async def by_ids(self, ids: Sequence[int], sort: ProductSort | None, params: PageParams) -> Page[ProductCardOut]:
+        """GET /products?ids=: visible products among the ids (out-of-stock ones included), in the
+        order of the ids unless a sort is given. Other filters do not apply."""
+        rows, total = await repo.cards_by_ids(self.session, ids, sort, params.offset, params.page_size)
+        if total is None:
+            total = len(await repo.visible_ids_among(self.session, ids)) if params.page > 1 else 0
+        return Page[ProductCardOut](
+            items=await self.cards(rows), page=params.page, page_size=params.page_size, total=total
+        )
+
     async def cards(self, rows: Sequence[CardRow], favorite_ids: set[int] | None = None) -> list[ProductCardOut]:
-        """THE card builder (catalog lists, related, favorites): two batched queries."""
+        """THE card builder (catalog lists, related, favorites): two batched queries (plus the
+        catalog_hide_out_of_stock setting, once per catalog version and process)."""
+        if not rows:
+            return []
         ids = [r.id for r in rows]
         images = await repo.main_image_keys(self.session, ids)
-        variants = await repo.variants_of(
-            self.session, [r.id for r in rows if r.type == ProductType.variable], active_only=True
-        )
-        cards = [build_card(r, images.get(r.id), variants.get(r.id, [])) for r in rows]
+        variable_ids = [r.id for r in rows if r.type == ProductType.variable]
+        variants = await repo.variants_of(self.session, variable_ids, active_only=True)
+        in_stock_swatches = bool(variable_ids) and await hide_out_of_stock(self.session)
+        cards = [
+            build_card(r, images.get(r.id), variants.get(r.id, []), in_stock_swatches=in_stock_swatches) for r in rows
+        ]
         for card in cards:
             card.is_favorite = card.id in (favorite_ids or set())
         return cards

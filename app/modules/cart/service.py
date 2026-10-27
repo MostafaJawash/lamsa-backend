@@ -12,7 +12,7 @@ import asyncio
 import logging
 import random
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import TypeVar
 
@@ -25,11 +25,15 @@ from app.modules.cart.repository import LineRef, LineRow, TargetProduct
 from app.modules.cart.schemas import (
     CartBrand,
     CartBundleItem,
+    CartCountOut,
     CartLineOut,
     CartMergeItem,
     CartMergeOut,
     CartNoticeOut,
     CartOut,
+    CartPreviewItem,
+    CartPreviewLineOut,
+    CartPreviewOut,
     CartProduct,
     CartVariant,
     DeliveryQuote,
@@ -421,6 +425,15 @@ class CartService:
         cart, evaluated = build_cart(rows, limits, self.loader, images, methods, notices)
         return cart, (rows, images, methods, evaluated, limits)
 
+    async def count(self) -> CartCountOut:
+        """The badge numbers, counted exactly like the cart (lines with an issue add no items)."""
+        rows, limits = await repo.load_lines_with_limits(self.session, self.user_id)
+        if not rows or limits is None:
+            return CartCountOut(items_count=0, lines_count=0)
+        await self.loader.ensure_components({r.product_id for r in rows if r.type == ProductType.bundle})
+        items = sum(r.quantity for r in rows if evaluate(r, limits, self.loader).issue is None)
+        return CartCountOut(items_count=items, lines_count=len(rows))
+
     async def checkout_snapshot(self, limits: StoreLimits) -> CheckoutSnapshot:
         """The cart exactly as GET /cart computes it, plus the loaded data placement needs for
         order snapshots. Call only after the product/variant rows are locked (see orders)."""
@@ -649,3 +662,74 @@ class CartService:
             return CartMergeOut(**cart.model_dump(), merge_report=report)
 
         return await self.retrying(operation)
+
+
+# =============================================================================== preview
+
+
+def preview_key(product_id: int, variant_id: int | None) -> str:
+    return f"{product_id}:{variant_id or 0}"
+
+
+def unknown_product_row(product_id: int, variant_id: int | None, quantity: int) -> LineRow:
+    """A product that does not exist (any more): an UNAVAILABLE line with only its id."""
+    return LineRow(
+        id=0, quantity=quantity, product_id=product_id, slug="", name="", type=ProductType.simple, price=None,
+        sale_price=None, stock=0, visible=False, brand_name=None, brand_slug=None, variant_id=variant_id,
+        variant_options=None, variant_price=None, variant_sale_price=None, variant_stock=None, variant_active=None,
+    )
+
+
+class CartPreviewService:
+    """POST /cart/preview: the cart a device keeps (guests), computed by the same rules as GET /cart
+    (build_cart / evaluate), without storing anything. Bounded statements for any item count."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.loader = CartLoader(session)
+
+    async def preview(self, items: Sequence[CartPreviewItem]) -> CartPreviewOut:
+        methods, limits = await repo.cached_delivery_methods(self.session)
+        limits = limits or await load_limits(self.session)
+
+        # Same product and variant twice: one line, capped at the per-line maximum.
+        wanted: dict[tuple[int, int | None], int] = {}
+        repeated: set[tuple[int, int | None]] = set()
+        for item in items:
+            key = (item.product_id, item.variant_id)
+            if key in wanted:
+                repeated.add(key)
+            wanted[key] = wanted.get(key, 0) + item.quantity
+        notices: list[CartNoticeOut] = []
+        for key in repeated:
+            final = min(wanted[key], limits.cart_max_quantity_per_line)
+            notices.append(notice(CartNotice.LINES_MERGED, product_id=key[0], to_quantity=final))
+            if final < wanted[key]:
+                notices.append(notice(CartNotice.QUANTITY_CAPPED, product_id=key[0], from_quantity=wanted[key],
+                                      to_quantity=final, reason=CartIssue.QUANTITY_LIMIT_EXCEEDED))
+            wanted[key] = final
+
+        found = await repo.preview_rows(self.session, list(wanted))
+        rows: list[LineRow] = []
+        for (product_id, variant_id), quantity in wanted.items():
+            base = found.get((product_id, None))
+            if base is None:
+                rows.append(unknown_product_row(product_id, variant_id, quantity))
+                continue
+            row = found.get((product_id, variant_id)) if variant_id is not None else base
+            if row is None or row.variant_id != variant_id:
+                # A variant that is not this product's, or one for a product without variants.
+                row = replace(base, variant_id=None)
+                if base.type != ProductType.variable:
+                    row.visible = False
+            rows.append(replace(row, quantity=quantity))
+
+        await self.loader.ensure_variants({r.product_id for r in rows if r.type == ProductType.variable})
+        images = await repo.images_for(self.session, sorted({r.product_id for r in rows if r.slug}))
+        await self.loader.ensure_components({r.product_id for r in rows if r.type == ProductType.bundle})
+        cart, _ = build_cart(rows, limits, self.loader, images, methods, notices)
+        lines = [
+            CartPreviewLineOut(**line.model_dump(exclude={"id"}), key=preview_key(*key))
+            for line, key in zip(cart.lines, wanted, strict=True)
+        ]
+        return CartPreviewOut(**cart.model_dump(exclude={"lines"}), lines=lines)

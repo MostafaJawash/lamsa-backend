@@ -17,6 +17,7 @@ from app.modules.notifications.router import router as notifications_router
 from app.modules.orders.router import router as orders_router
 from app.modules.products.admin_router import router as admin_products_router
 from app.modules.products.router import router as products_router
+from app.modules.settings.router import admin_router as admin_settings_router
 from app.modules.users.router import addresses_router, devices_router
 from app.modules.users.router import router as users_router
 
@@ -42,3 +43,4 @@ api_router.include_router(admin_products_router)
 api_router.include_router(admin_orders_router)
 api_router.include_router(admin_notifications_router)
 api_router.include_router(admin_banners_router)
+api_router.include_router(admin_settings_router)

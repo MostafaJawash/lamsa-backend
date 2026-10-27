@@ -38,6 +38,7 @@ CLEANUP = [
     "DELETE FROM brands",
     "DELETE FROM users",
     "DELETE FROM login_attempts",
+    "DELETE FROM store_settings WHERE `key` = 'catalog_hide_out_of_stock'",
 ]
 
 
@@ -175,3 +176,14 @@ def test_query_builder_units() -> None:
     assert build_boolean_query("a b c") is None
     assert build_boolean_query("one two three four five six seven") == '+"one" +"two" +"three" +"four" +"five" +"six"'
     assert build_boolean_query("ok ok") == '+"ok"'
+
+
+async def test_search_leaves_out_of_stock_products_out_unless_the_setting_is_off(
+    committed: Any, products: dict[str, Any]
+) -> None:
+    client, headers = committed
+    care = products["cream"]["category"]["id"]
+    await published_product(client, headers, name="عطر الورد النادر", category_id=care, stock=0)
+    assert await search(client, "النادر") == []  # default: hidden while browsing
+    ok(await client.patch(f"{ADMIN}/settings", json={"catalog_hide_out_of_stock": False}, headers=headers))
+    assert await search(client, "النادر") == ["عطر الورد النادر"]

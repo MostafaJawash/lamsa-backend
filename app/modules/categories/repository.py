@@ -33,11 +33,16 @@ async def product_ids_in(session: AsyncSession, category_ids: Sequence[int]) -> 
     return list((await session.scalars(select(Product.id).where(Product.category_id.in_(category_ids)))).all())
 
 
-async def product_counts_by_category(session: AsyncSession, *, visible_only: bool) -> dict[int, int]:
-    """Number of products directly in each category (visible ones only, for customers)."""
+async def product_counts_by_category(
+    session: AsyncSession, *, visible_only: bool, in_stock_only: bool = False
+) -> dict[int, int]:
+    """Number of products directly in each category (visible ones only, for customers; with
+    in_stock_only, in-stock ones only: the catalog_hide_out_of_stock setting)."""
     stmt = select(Product.category_id, func.count(Product.id)).group_by(Product.category_id)
     if visible_only:
         stmt = stmt.where(visible_product_condition())
+    if in_stock_only:
+        stmt = stmt.where(Product.in_stock.is_(True))
     return {category_id: int(count) for category_id, count in (await session.execute(stmt)).all()}
 
 

@@ -66,6 +66,8 @@ class ProductFilters:
     min_price: Decimal | None = None
     max_price: Decimal | None = None
     in_stock: bool = False
+    # The store setting catalog_hide_out_of_stock (browsing never shows out-of-stock products).
+    hide_out_of_stock: bool = False
     on_sale: bool = False
     is_new: bool = False
     attrs: list[AttrFilter] = field(default_factory=list)
@@ -267,7 +269,7 @@ def build_conditions(filters: ProductFilters, *, exclude: str | None = None) -> 
             conditions.append(Product.price_from >= filters.min_price)
         if filters.max_price is not None:
             conditions.append(Product.price_from <= filters.max_price)
-    if filters.in_stock:
+    if filters.in_stock or filters.hide_out_of_stock:
         conditions.append(Product.in_stock.is_(True))
     if filters.on_sale:
         conditions.append(Product.is_on_sale.is_(True))

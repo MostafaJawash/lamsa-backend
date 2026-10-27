@@ -9,6 +9,7 @@ from app.modules.brands.models import Brand
 from app.modules.brands.schemas import AdminBrandOut, BrandCreate, BrandOut, BrandUpdate
 from app.modules.categories.tree import load_category_index
 from app.modules.products.summary import refresh_search_text
+from app.modules.settings.service import hide_out_of_stock
 from app.shared.catalog import flush_catalog, unique_slug
 from app.shared.dependencies.pagination import Page, PageParams
 from app.shared.exceptions import Conflict, ErrorCode, NotFound
@@ -41,11 +42,15 @@ class BrandCatalogService:
             if category is None or not index.is_visible(category):
                 raise NotFound(ErrorCode.CATEGORY_NOT_FOUND)
             category_ids = index.subtree_ids(category)
-        rows = await repo.visible_brands_with_counts(self.session, category_ids)
+        rows = await repo.visible_brands_with_counts(
+            self.session, category_ids, in_stock_only=await hide_out_of_stock(self.session)
+        )
         return [brand_out(brand, count) for brand, count in rows]
 
     async def detail(self, slug: str) -> BrandOut:
-        row = await repo.visible_brand_by_slug(self.session, slug)
+        row = await repo.visible_brand_by_slug(
+            self.session, slug, in_stock_only=await hide_out_of_stock(self.session)
+        )
         if row is None:
             raise NotFound(ErrorCode.BRAND_NOT_FOUND)
         return brand_out(*row)

@@ -304,16 +304,19 @@ Every error, including validation errors and unexpected ones, has this shape:
 
 All catalog endpoints are public (no token needed). Money is always a **string with two decimals**, for example `"8.95"`. Hidden items (inactive, or in a hidden category or brand) return `404`.
 
+**Out-of-stock products are not shown while browsing** (store setting `catalog_hide_out_of_stock`, default `true`, see [Out of stock while browsing](#out-of-stock-while-browsing)): product lists, search, facets and `product_count` leave them out. Their product page, `?ids=`, the cart and favorites still show them.
+
 | Endpoint | Returns |
 |---|---|
-| `GET /categories` | Visible tree: `[{id, name, slug, description, image, product_count, children: [...]}]`. Counts include children. |
+| `GET /categories` | Visible tree: `[{id, name, slug, description, image, product_count, children: [...]}]`. Counts include children (in-stock products only while the setting is on). A category can exist with `product_count` 0. |
 | `GET /categories/{slug}` | Category plus `breadcrumb`, visible `children`, filterable `attributes` and `variant_options` (with inherited ones). Use these to build the filter screen. |
 | `GET /brands?category=<slug>` | Visible brands with `logo` and `product_count`; with `category`, only brands that have products there. |
 | `GET /brands/{slug}` | One brand with its `product_count`. |
 | `GET /products` | Paginated product **cards** (filters below). |
+| `GET /products?ids=3,1,2` | The visible products among those ids (at most 100), **out-of-stock ones included**, in the order given (unless `sort` is set); `page` / `page_size` apply, every other filter is ignored. For favorites kept on the device by guests. Bad ids: `422 INVALID_FILTER` |
 | `GET /products/facets` | Counts for the filter UI (same filters, no page or sort). |
 | `GET /products/{slug}` | Product **detail**. |
-| `GET /products/{slug}/related?limit=8` | Up to 12 in-stock products from the same category (then the parent category). |
+| `GET /products/{slug}/related?limit=8` | Up to 12 products from the same category (then the parent category). **Always in-stock products only**, whatever the setting. |
 
 `image` / `logo` objects are `{thumb, medium, large}` URLs (300 / 800 / 1600 px WebP), or `null`.
 
@@ -325,7 +328,7 @@ All catalog endpoints are public (no token needed). Money is always a **string w
 | `brand=<slug>` | Repeatable; OR between brands |
 | `q=<text>` | Search (Arabic or English) |
 | `min_price`, `max_price` | On the shown price |
-| `in_stock=true`, `on_sale=true`, `is_new=true` | Flags |
+| `in_stock=true`, `on_sale=true`, `is_new=true` | Flags (`in_stock` changes nothing while `catalog_hide_out_of_stock` is on: hide that filter in the app) |
 | `attr.<key>=<value>` | Attribute filter. Repeat a key for OR; different keys are AND. Multiselect matches if the product has any of the values. |
 | `attr.<key>.min`, `attr.<key>.max` | Number attributes |
 | `attr.<key>=true\|false` | Boolean attributes |
@@ -358,7 +361,7 @@ A card is `{id, slug, name, type, brand, category, image, price, compare_at_pric
 
 - `price` is what the customer pays: the lowest current price, with variants included.
 - When `compare_at_price` is not null, show it crossed out next to `price`, plus a badge with `discount_percent` (for example "-25%").
-- `swatches` are up to 8 `{name, hex}` colors of a variable product, in variant order.
+- `swatches` are up to 8 `{name, hex}` colors of a variable product, in variant order (while `catalog_hide_out_of_stock` is on, only colors with stock).
 
 ### Detail
 
@@ -385,6 +388,22 @@ Exact stock is never public. `stock_status` is one of:
 - `low`: 1 to `low_stock_threshold` left (a store setting, default 3). `stock_left` then holds the count, for example "باقي ٣ قطع بس".
 - `out`
 
+### Out of stock while browsing
+
+Business rule, for the website and the apps alike: **out-of-stock products are not shown while browsing.** The store setting `catalog_hide_out_of_stock` (default `true`, inserted by `seed_base`; change it with `PATCH /admin/settings`) controls it.
+
+| While `true` | Behaviour |
+|---|---|
+| `GET /products` (all filters, search, new, sale, brand and category lists) | In-stock products only; `total` counts them |
+| `GET /products/facets` | Counts and the price range over in-stock products only |
+| `product_count` in `/categories`, `/categories/{slug}`, `/brands`, `/brands/{slug}` | In-stock visible products only. `/brands?category=` lists only brands with in-stock products there |
+| Card `swatches` | Only active variants with stock |
+| `GET /products/{slug}/related` | Always in-stock only (also while `false`) |
+
+**Not affected:** `GET /products/{slug}` (still `200`, with `stock_status` `"out"`: show "notify me" through the heart), `GET /products?ids=`, the cart, `POST /cart/preview`, favorites, orders and every admin endpoint.
+
+A product that sells out disappears from lists right away and comes back when it is restocked: every change of a visible product's `in_stock` (orders, cancellations, admin stock edits, bundles following their components) bumps the catalog cache version. Changing the setting does too.
+
 ### Search
 
 Search is Arabic-aware. Letter variants are folded on both the stored text and the query: أ إ آ ٱ → ا, ى → ي, ة → ه, tashkeel and tatweel are removed, and Arabic-Indic digits become 0–9. Search covers the name, description, brand, category, attribute values and variant option values.
@@ -401,7 +420,7 @@ Every word must match. Operators and quotes are ignored, and words shorter than 
 
 ## Cart and favorites for app developers
 
-All `/cart` and `/favorites` endpoints need a logged-in user, and the password-change gate applies.
+All `/cart` and `/favorites` endpoints need a logged-in user, and the password-change gate applies, **except `POST /cart/preview`**, which is public.
 
 ### Guests
 
@@ -415,6 +434,14 @@ The API stores nothing for guests. Keep the guest cart and favorites **on the de
   Clear the local cart after a successful response.
 - `POST /favorites/merge {product_ids: [...]}` (at most 200) returns `{added, skipped: [{product_id, reason}]}`.
 
+To **show** the guest cart before login, send it to `POST /cart/preview {items: [{product_id, variant_id?, quantity}]}` (public; an `Authorization` header is ignored; at most 50 items, quantity 1..99, otherwise `422`). The response is exactly the cart `GET /cart` would return for those items (same lines, prices, issues, summary, `delivery_quotes`, `can_checkout`), computed by the same code, and nothing is stored:
+- Lines have a `key` (`"<product_id>:<variant_id or 0>"`) instead of `id`; the line order is the order sent.
+- An unknown or hidden product comes back as an `UNAVAILABLE` line (an unknown one with only `product.id`, an empty name and slug, prices 0); a variable product without (or with someone else's) variant is `VARIANT_UNAVAILABLE`. Never a 404 for the whole request.
+- The same product and variant twice become one line, capped at `cart_max_quantity_per_line` (notices `LINES_MERGED`, and `QUANTITY_CAPPED` when capped; they carry `product_id`, no `item_id`).
+- Use the line issues to fix the device cart (remove `UNAVAILABLE` / `VARIANT_UNAVAILABLE` / `OUT_OF_STOCK` lines, cap the others to `issue.available` or `issue.max`): that is what `resolve-issues` does for a stored cart.
+
+Guest favorites: show them with `GET /products?ids=` (out-of-stock products included).
+
 ### Cart endpoints
 
 Every mutating endpoint returns the **whole cart**, so the app needs one round trip.
@@ -422,6 +449,8 @@ Every mutating endpoint returns the **whole cart**, so the app needs one round t
 | Endpoint | Notes |
 |---|---|
 | `GET /cart` | The cart |
+| `GET /cart/count` | `{items_count, lines_count}`, exactly as in the cart, for badges (cheap: at most 3 statements) |
+| `POST /cart/preview {items}` | Public. The cart for items kept on the device (see Guests) |
 | `POST /cart/items {product_id, variant_id?, quantity=1}` | `201` for a new line, `200` when an existing line grew (quantities add up) |
 | `PATCH /cart/items/{id} {quantity?, variant_id?}` | Picking a variant that's already in the cart merges the two lines; the result is capped silently and reported in `notices` |
 | `DELETE /cart/items/{id}`, `DELETE /cart` | |
@@ -705,6 +734,8 @@ Admin responses show everything: inactive items, exact stock, SKUs, timestamps, 
 
 Images are removed from storage only after the database change commits, and new files are cleaned up if the commit fails.
 
+**Store settings:** `GET /admin/settings` returns the settings the admin API manages with their current values, today `{"catalog_hide_out_of_stock": true}`. `PATCH /admin/settings {"catalog_hide_out_of_stock": false}` changes them (only the keys sent; unknown keys or wrong types are `422 VALIDATION_ERROR`) and invalidates the catalog cache. The keys are a small registry (`app/modules/settings/admin.py`, with typed fields in `app/modules/settings/schemas.py`); other settings are still changed through `seed_base` or SQL.
+
 ---
 
 ## Performance: caching and load protection
@@ -715,24 +746,25 @@ Only anonymous catalog responses are cached, as JSON bytes in Valkey. **Cart, ch
 
 | Endpoint | TTL | Fresh again after |
 |---|---|---|
-| `GET /categories`, `GET /categories/{slug}` | 300 s | any admin catalog change |
-| `GET /brands` (with or without `?category=`), `GET /brands/{slug}` | 300 s | any admin catalog change |
+| `GET /categories`, `GET /categories/{slug}` | 300 s | any admin catalog change, a product selling out or coming back in stock |
+| `GET /brands` (with or without `?category=`), `GET /brands/{slug}` | 300 s | the same |
 | `GET /banners` | 60 s | any admin catalog change (a banner whose time window starts or ends shows up within 60 s) |
-| `GET /products` (all query parameters), `GET /products/facets` | 45 s | any admin catalog change; **not** after orders (see below) |
+| `GET /products` (all query parameters, `?ids=` keyed by its ids), `GET /products/facets` | 45 s | any admin catalog change, a product selling out or coming back in stock; **not** other stock changes from orders (see below) |
 | `GET /products/{slug}` | 120 s | any admin catalog change, **and** any change to that product's stock or price (orders, cancellations, stock adjusts). The long TTL is safe because these version bumps, not the TTL, keep the page fresh |
-| `GET /products/{slug}/related` | 120 s | any admin catalog change |
+| `GET /products/{slug}/related` | 120 s | any admin catalog change, a product selling out or coming back in stock |
 
 TTLs vary by ±10 % so that entries don't all expire at once.
 
 - **`is_favorite` is never stored.** The cache holds the anonymous response. For a logged-in user, `is_favorite` is filled in with one query per request, as before.
-- **Product pages are fresh; lists may be stale.** A product page shows "out of stock" right after the last unit is sold. Lists, facets and related products may show it as in stock for up to their TTL. That's on purpose: checkout re-checks stock in its own transaction, so a stale list can never sell something that isn't there.
+- **Product pages are fresh; lists follow stock-outs.** A product page shows "out of stock" right after the last unit is sold, and because browsing hides out-of-stock products, the same commit bumps the catalog version: lists, facets, counts and related products drop the product at once, and show it again as soon as it is back in stock (orders, cancellations, stock adjusts, bundles). Other stock changes (10 left → 9) do not touch lists; `stock_left` is only on product pages. Checkout re-checks stock in its own transaction anyway.
 - **Invalidation uses versions, never key scans.** Every key contains a global catalog version, and product pages also contain a per-product version. Both are random tokens, bumped only after a successful commit (through `commit_and_publish`):
-  - every POST, PUT, PATCH or DELETE on `/admin/categories`, `/admin/brands`, `/admin/products` and `/admin/banners` bumps the catalog version;
-  - any stock or price change (orders, cancellations, stock adjusts, edits) bumps the version of the products concerned.
+  - every POST, PUT, PATCH or DELETE on `/admin/categories`, `/admin/brands`, `/admin/products`, `/admin/banners` and `/admin/settings` bumps the catalog version;
+  - any stock or price change (orders, cancellations, stock adjusts, edits) bumps the version of the products concerned;
+  - a visible product's `in_stock` changing (sold out, back in stock) bumps the catalog version.
 
   Key format: `lamsa:c:<CACHE_SCHEMA_VERSION>:<catalog version>:<kind>:<parts>` (product pages: `…:p:<product version>:product:<slug>`). List keys hash the normalized query (parameters sorted, defaults filled in, unknown parameters ignored).
 - **Deploys and code changes.** Every API process bumps the catalog version when it starts, so a new deploy never serves entries written by the old code. **Bump `CACHE_SCHEMA_VERSION` in `app/core/cache.py` whenever a cached response model changes.**
-- **Settings and delivery fees** are kept per process for 60 s, because many requests read them. `seed_base` and SQL changes reach the other processes within 60 s. **Checkout always reads delivery fees fresh**: a fee shown stale in the cart ends in a clean `409 PRICE_CHANGED`, never a wrong charge.
+- **Settings and delivery fees** are kept per process for 60 s, because many requests read them. `seed_base` and SQL changes reach the other processes within 60 s. `catalog_hide_out_of_stock` is kept per catalog version instead, so a change through `PATCH /admin/settings` reaches every process with the version bump. **Checkout always reads delivery fees fresh**: a fee shown stale in the cart ends in a clean `409 PRICE_CHANGED`, never a wrong charge.
 - **Stampedes are prevented.** One computation per key runs at a time across all processes (a lock with `SET NX PX`); the others wait up to 1 s for its result.
 - **The cache is optional.** If Valkey is down or slow, requests skip it: after 3 consecutive errors, the cache is skipped for 5 s, and a warning is logged at most once a minute. A cache problem never causes an error response. Each process uses a bounded pool of 32 connections.
 

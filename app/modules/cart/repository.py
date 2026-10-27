@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import case, delete, insert, select, update
+from sqlalchemy import and_, case, delete, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.brands.models import Brand
@@ -88,6 +88,29 @@ class LineRow:
     variant_sku: str | None = None
 
 
+LINE_COLUMNS = (
+    Product.id.label("product_id"), Product.slug, Product.name, Product.type, Product.price, Product.sale_price,
+    Product.stock, visible_product_condition().label("visible"), Brand.name.label("brand_name"),
+    Brand.slug.label("brand_slug"), ProductVariant.id.label("variant_id"), ProductVariant.options,
+    ProductVariant.price.label("variant_price"), ProductVariant.sale_price.label("variant_sale_price"),
+    ProductVariant.stock.label("variant_stock"), ProductVariant.is_active.label("variant_active"),
+    Product.sku.label("product_sku"), ProductVariant.sku.label("variant_sku"),
+)
+
+
+def line_row(r: Any, line_id: int, quantity: int, *, without_variant: bool = False) -> LineRow:
+    variant = not without_variant
+    return LineRow(
+        id=line_id, quantity=quantity, product_id=r.product_id, slug=r.slug, name=r.name, type=r.type,
+        price=r.price, sale_price=r.sale_price, stock=r.stock, visible=bool(r.visible), brand_name=r.brand_name,
+        brand_slug=r.brand_slug, variant_id=r.variant_id if variant else None,
+        variant_options=r.options if variant else None, variant_price=r.variant_price if variant else None,
+        variant_sale_price=r.variant_sale_price if variant else None,
+        variant_stock=r.variant_stock if variant else None, variant_active=r.variant_active if variant else None,
+        product_sku=r.product_sku, variant_sku=r.variant_sku if variant else None,
+    )
+
+
 async def load_lines(
     session: AsyncSession, user_id: int, *, lock: bool = False, lock_products: bool = False
 ) -> list[LineRow]:
@@ -99,15 +122,7 @@ async def load_lines(
     FOR UPDATE OF products and variants, so prices and stock are the current values, not the
     request's snapshot. Those rows are already locked, so this adds no new waiting."""
     stmt = (
-        select(
-            CartItem.id, CartItem.quantity, Product.id.label("product_id"), Product.slug, Product.name, Product.type,
-            Product.price, Product.sale_price, Product.stock, visible_product_condition().label("visible"),
-            Brand.name.label("brand_name"), Brand.slug.label("brand_slug"), ProductVariant.id.label("variant_id"),
-            ProductVariant.options, ProductVariant.price.label("variant_price"),
-            ProductVariant.sale_price.label("variant_sale_price"), ProductVariant.stock.label("variant_stock"),
-            ProductVariant.is_active.label("variant_active"), Product.sku.label("product_sku"),
-            ProductVariant.sku.label("variant_sku"),
-        )
+        select(CartItem.id, CartItem.quantity, *LINE_COLUMNS)
         .join(Product, Product.id == CartItem.product_id)
         .outerjoin(Brand, Brand.id == Product.brand_id)
         .outerjoin(ProductVariant, ProductVariant.id == CartItem.variant_id)
@@ -119,16 +134,44 @@ async def load_lines(
     elif lock:
         stmt = stmt.with_for_update(of=CartItem)
     rows = await session.execute(stmt)
-    return [
-        LineRow(
-            id=r.id, quantity=r.quantity, product_id=r.product_id, slug=r.slug, name=r.name, type=r.type,
-            price=r.price, sale_price=r.sale_price, stock=r.stock, visible=bool(r.visible), brand_name=r.brand_name,
-            brand_slug=r.brand_slug, variant_id=r.variant_id, variant_options=r.options,
-            variant_price=r.variant_price, variant_sale_price=r.variant_sale_price, variant_stock=r.variant_stock,
-            variant_active=r.variant_active, product_sku=r.product_sku, variant_sku=r.variant_sku,
+    return [line_row(r, r.id, r.quantity) for r in rows]
+
+
+async def load_lines_with_limits(session: AsyncSession, user_id: int) -> tuple[list[LineRow], StoreLimits | None]:
+    """load_lines() with the store limits riding along (None for an empty cart): ONE statement."""
+    rows = (
+        await session.execute(
+            select(CartItem.id, CartItem.quantity, *LINE_COLUMNS, *limit_columns())
+            .join(Product, Product.id == CartItem.product_id)
+            .outerjoin(Brand, Brand.id == Product.brand_id)
+            .outerjoin(ProductVariant, ProductVariant.id == CartItem.variant_id)
+            .where(CartItem.user_id == user_id)
         )
-        for r in rows
-    ]
+    ).all()
+    return [line_row(r, r.id, r.quantity) for r in rows], (limits_from_row(rows[0]) if rows else None)
+
+
+async def preview_rows(session: AsyncSession, keys: Sequence[tuple[int, int | None]]) -> dict[tuple[int, int | None], LineRow]:
+    """Cart preview: product, brand and (when asked for) variant data for (product_id, variant_id)
+    pairs in ONE statement, with quantity 0 and id 0 (filled in by the caller). A variant counts
+    only if it belongs to the product. Missing products are simply absent."""
+    if not keys:
+        return {}
+    product_ids = sorted({p for p, _ in keys})
+    variant_ids = sorted({v for _, v in keys if v is not None})
+    variant_join = and_(ProductVariant.product_id == Product.id, ProductVariant.id.in_(variant_ids or [0]))
+    rows = await session.execute(
+        select(*LINE_COLUMNS)
+        .select_from(Product)
+        .outerjoin(Brand, Brand.id == Product.brand_id)
+        .outerjoin(ProductVariant, variant_join)
+        .where(Product.id.in_(product_ids))
+    )
+    result: dict[tuple[int, int | None], LineRow] = {}
+    for r in rows:
+        result[(r.product_id, r.variant_id)] = line_row(r, 0, 0)
+        result.setdefault((r.product_id, None), line_row(r, 0, 0, without_variant=True))
+    return result
 
 
 @dataclass(frozen=True)

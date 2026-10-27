@@ -8,6 +8,7 @@ Pass fresh=True where a stale value must never be used.
 """
 
 import json
+from contextvars import ContextVar
 from dataclasses import dataclass, fields
 from datetime import time
 from typing import Any
@@ -76,6 +77,37 @@ def limits_from_row(row: Any) -> StoreLimits:
 
 async def get_low_stock_threshold(session: AsyncSession) -> int:
     return (await load_limits(session)).low_stock_threshold
+
+
+# ------------------------------------------------------------------------ catalog
+
+CATALOG_HIDE_OUT_OF_STOCK = "catalog_hide_out_of_stock"
+HIDE_OUT_OF_STOCK_DEFAULT = True
+
+# The catalog cache version of the request being computed (set by app.shared.http_cache), so the
+# per-process copy of catalog settings is keyed by it: a version bump (e.g. the admin settings
+# endpoint) makes every process read the setting again before it computes anything new.
+catalog_version: ContextVar[str | None] = ContextVar("catalog_version", default=None)
+
+
+def parse_bool_setting(value: Any, default: bool) -> bool:
+    """JSON value -> bool, or the default when missing/invalid (only true/false are accepted)."""
+    value = _json(value)
+    return value if isinstance(value, bool) else default
+
+
+async def hide_out_of_stock(session: AsyncSession) -> bool:
+    """catalog_hide_out_of_stock: out-of-stock products are left out of browsing (lists, search,
+    facets, category/brand product counts). One statement per catalog version and process."""
+    version = catalog_version.get()
+    key = f"hide_oos:{version}" if version else "hide_oos"
+    cached: bool | None = local_cache.get(key)
+    if cached is not None:
+        return cached
+    value = await session.scalar(select(StoreSetting.value).where(StoreSetting.key == CATALOG_HIDE_OUT_OF_STOCK))
+    result = parse_bool_setting(value, HIDE_OUT_OF_STOCK_DEFAULT)
+    local_cache.put(key, result)
+    return result
 
 
 # ------------------------------------------------------------------- notifications

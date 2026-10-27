@@ -16,15 +16,18 @@ async def get_brand(session: AsyncSession, brand_id: int, *, for_update: bool = 
 
 
 async def visible_brands_with_counts(
-    session: AsyncSession, category_ids: Sequence[int] | None
+    session: AsyncSession, category_ids: Sequence[int] | None, *, in_stock_only: bool = False
 ) -> list[tuple[Brand, int]]:
-    """Active brands with their visible product counts. With category_ids, only brands that have
-    visible products in those categories, counted there."""
+    """Active brands with their visible product counts (in_stock_only: in-stock ones only, the
+    catalog_hide_out_of_stock setting). With category_ids, only brands that have such products in
+    those categories, counted there."""
     counts = (
         select(Product.brand_id.label("brand_id"), func.count(Product.id).label("n"))
         .where(visible_product_condition(), Product.brand_id.is_not(None))
         .group_by(Product.brand_id)
     )
+    if in_stock_only:
+        counts = counts.where(Product.in_stock.is_(True))
     if category_ids is not None:
         counts = counts.where(Product.category_id.in_(category_ids))
     sub = counts.subquery()
@@ -39,13 +42,13 @@ async def visible_brands_with_counts(
     return [(brand, int(n)) for brand, n in (await session.execute(stmt)).all()]
 
 
-async def visible_brand_by_slug(session: AsyncSession, slug: str) -> tuple[Brand, int] | None:
-    count = (
-        select(func.count(Product.id))
-        .where(Product.brand_id == Brand.id, visible_product_condition())
-        .correlate(Brand)
-        .scalar_subquery()
-    )
+async def visible_brand_by_slug(
+    session: AsyncSession, slug: str, *, in_stock_only: bool = False
+) -> tuple[Brand, int] | None:
+    conditions = [Product.brand_id == Brand.id, visible_product_condition()]
+    if in_stock_only:
+        conditions.append(Product.in_stock.is_(True))
+    count = select(func.count(Product.id)).where(*conditions).correlate(Brand).scalar_subquery()
     row = (await session.execute(select(Brand, count).where(Brand.slug == slug, Brand.is_active.is_(True)))).first()
     return (row[0], int(row[1])) if row else None
 

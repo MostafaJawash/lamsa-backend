@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import TypeAdapter
 
 from app.modules.products.catalog_service import CatalogProductService, ListQuery
+from app.modules.products.filters import invalid_filter
 from app.modules.products.schemas import FacetsOut, ProductCardOut, ProductDetailOut, ProductSort
 from app.shared.dependencies.auth import DbSession, OptionalUser
 from app.shared.dependencies.pagination import DEFAULT_PAGE_SIZE, Page, PageParamsDep
@@ -46,6 +47,25 @@ def list_query(
 
 ListQueryDep = Annotated[ListQuery, Depends(list_query)]
 
+MAX_IDS = 100
+IDS_DOC = (
+    "Comma-separated product ids (at most 100, positive integers), e.g. for favorites kept on a device. "
+    "Returns the visible ones among them, out-of-stock products included, in the order given unless "
+    "`sort` is set; `page` / `page_size` apply; every other filter is ignored."
+)
+
+
+def parse_ids(raw: str) -> list[int]:
+    """"3,1,2" -> [3, 1, 2] (duplicates dropped, order kept); 422 INVALID_FILTER otherwise."""
+    parts = [p.strip() for p in raw.split(",")]
+    if not parts or any(not p.isdigit() or int(p) < 1 for p in parts):
+        raise invalid_filter("ids", "positive integers separated by commas")
+    ids = list(dict.fromkeys(int(p) for p in parts))
+    if len(ids) > MAX_IDS:
+        raise invalid_filter("ids", f"at most {MAX_IDS} ids")
+    return ids
+
+
 # Cached: the anonymous body (is_favorite overlaid per user), see app/shared/http_cache.py.
 PAGE_ADAPTER: TypeAdapter[Page[ProductCardOut]] = TypeAdapter(Page[ProductCardOut])
 FACETS_ADAPTER: TypeAdapter[FacetsOut] = TypeAdapter(FacetsOut)
@@ -62,11 +82,19 @@ async def list_products(
     service: Service,
     user: OptionalUser,
     sort: Annotated[ProductSort | None, Query(description="Default: relevance with q, else newest")] = None,
+    ids: Annotated[str | None, Query(description=IDS_DOC)] = None,
 ) -> Response:
+    overlay = favorites_overlay(service.session, user.id if user else None, "page")
+    if ids is not None:
+        product_ids = parse_ids(ids)
+        part = f"{','.join(map(str, product_ids))}|{sort.value if sort else ''}|{params.page}|{params.page_size}"
+        return await serve_cached(
+            request, "products_ids", [query_hash(part)], PAGE_ADAPTER,
+            lambda: service.by_ids(product_ids, sort, params), overlay=overlay,
+        )
     key = query_hash(normalized_query(query.params, paging=True, defaults=PAGING_DEFAULTS))
     return await serve_cached(
-        request, "products", [key], PAGE_ADAPTER, lambda: service.list(query, sort, params),
-        overlay=favorites_overlay(service.session, user.id if user else None, "page"),
+        request, "products", [key], PAGE_ADAPTER, lambda: service.list(query, sort, params), overlay=overlay
     )
 
 

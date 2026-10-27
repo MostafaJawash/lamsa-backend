@@ -87,6 +87,29 @@ async def list_cards(
     return [card_row(r) for r in rows], (int(rows[0].total) if rows else None)
 
 
+async def cards_by_ids(
+    session: AsyncSession, ids: Sequence[int], sort: ProductSort | None, offset: int, limit: int
+) -> tuple[list[CardRow], int | None]:
+    """Visible products among `ids` (stock is ignored), in the order of `ids` unless sorted, with
+    the total via COUNT(*) OVER() (None when the page is empty)."""
+    order = _order(sort, ProductFilters()) if sort is not None else [func.field(Product.id, *ids)]
+    rows = (
+        await session.execute(
+            card_select(func.count().over().label("total"))
+            .where(visible_product_condition(), Product.id.in_(ids))
+            .order_by(*order)
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    return [card_row(r) for r in rows], (int(rows[0].total) if rows else None)
+
+
+async def visible_ids_among(session: AsyncSession, ids: Sequence[int]) -> list[int]:
+    rows = await session.scalars(select(Product.id).where(visible_product_condition(), Product.id.in_(ids)))
+    return list(rows.all())
+
+
 async def count_products(session: AsyncSession, filters: ProductFilters) -> int:
     return int(await session.scalar(select(func.count(Product.id)).where(*build_conditions(filters))) or 0)
 

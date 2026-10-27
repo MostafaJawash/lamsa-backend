@@ -5,8 +5,11 @@
   `on_catalog_changed` bumps the global catalog version (every catalog/banner entry key contains it).
 - recalculate_product_summary stashes ProductsChanged(slugs): `on_products_changed` bumps those
   products' detail versions, so a product page is fresh right after an order sold the last unit.
-  Product lists, facets and related products are NOT invalidated by orders: they may be up to their
-  TTL stale (checkout re-validates stock anyway).
+  When a visible product's in_stock flips (sold out, or back in stock) it also stashes
+  CatalogChanged: browsing hides out-of-stock products (catalog_hide_out_of_stock), so lists,
+  facets, counts and related products are recomputed. Other stock changes (10 -> 9) leave lists
+  up to their TTL stale (checkout re-validates stock anyway).
+- The admin settings endpoint (app.modules.settings.router) is a catalog write too.
 """
 
 import logging

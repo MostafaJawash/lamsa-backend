@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.cache import cache_events, get_cache, key_part
 from app.modules.favorites.repository import favorite_ids_among
+from app.modules.settings.service import catalog_version
 from app.shared.catalog_cache import product_version_name
 
 STALE_WHILE_REVALIDATE = 60
@@ -35,6 +36,7 @@ TTL = {
     "facets": 45,
     "product": 120,  # long on purpose: freshness comes from the catalog and per-product version bumps
     "related": 120,
+    "products_ids": 45,
 }
 
 # Query parameters that change a product list / facets response (anything else is ignored by the
@@ -131,18 +133,22 @@ async def serve_cached(
 
     names = ["catalog"] + ([product_version_name(product_slug)] if product_slug is not None else [])
     versions = await cache.versions(names)
-    if versions is None:
-        events = cache_events.get()
-        if events is not None:
-            events.append("bypass")
-        body = await produce()
-    else:
-        key_parts = [key_part(p) for p in parts]
-        if product_slug is not None:
-            name = cache.entry(versions[0], "p", versions[1], kind, *key_parts)
+    token = catalog_version.set(versions[0] if versions is not None else None)
+    try:
+        if versions is None:
+            events = cache_events.get()
+            if events is not None:
+                events.append("bypass")
+            body = await produce()
         else:
-            name = cache.entry(versions[0], kind, *key_parts)
-        body = await cache.get_or_compute(name, ttl, produce)
+            key_parts = [key_part(p) for p in parts]
+            if product_slug is not None:
+                name = cache.entry(versions[0], "p", versions[1], kind, *key_parts)
+            else:
+                name = cache.entry(versions[0], kind, *key_parts)
+            body = await cache.get_or_compute(name, ttl, produce)
+    finally:
+        catalog_version.reset(token)
     if overlay is not None:
         body = await overlay(body)
     return cached_json_response(request, body, ttl)

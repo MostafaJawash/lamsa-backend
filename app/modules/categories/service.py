@@ -41,6 +41,7 @@ from app.modules.products import usage
 from app.modules.products.models import Product, ProductVariant
 from app.modules.products.summary import refresh_search_text
 from app.modules.products.validation import validate_attributes, validate_variant_options, validate_variant_set
+from app.modules.settings.service import hide_out_of_stock
 from app.shared.catalog import field_error, flush_catalog, json_path, unique_slug
 from app.shared.exceptions import AppError, Conflict, ErrorCode, NotFound, ValidationFailed
 from app.shared.schemas import image_urls
@@ -65,7 +66,9 @@ class CategoryCatalogService:
 
     async def tree(self) -> list[CategoryNode]:
         index = await load_category_index(self.session)
-        counts = await repo.product_counts_by_category(self.session, visible_only=True)
+        counts = await repo.product_counts_by_category(
+            self.session, visible_only=True, in_stock_only=await hide_out_of_stock(self.session)
+        )
         return [self._node(index, counts, root) for root in index.roots() if index.is_visible(root)]
 
     def _node(self, index: CategoryIndex, counts: dict[int, int], category: Category) -> CategoryNode:
@@ -82,7 +85,9 @@ class CategoryCatalogService:
         category = index.by_slug(slug)
         if category is None or not index.is_visible(category):
             raise NotFound(ErrorCode.CATEGORY_NOT_FOUND)
-        counts = await repo.product_counts_by_category(self.session, visible_only=True)
+        counts = await repo.product_counts_by_category(
+            self.session, visible_only=True, in_stock_only=await hide_out_of_stock(self.session)
+        )
         definitions = await load_effective_definitions(self.session, category.id, category.parent_id)
         node = self._node(index, counts, category)
         return CategoryDetailOut(

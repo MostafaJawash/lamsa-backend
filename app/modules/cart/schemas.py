@@ -38,6 +38,16 @@ class CartMerge(BaseModel):
     items: list[CartMergeItem] = Field(max_length=100)
 
 
+class CartPreviewItem(BaseModel):
+    product_id: int = Field(ge=1)
+    variant_id: int | None = Field(default=None, ge=1)
+    quantity: int = Field(ge=1, le=99)
+
+
+class CartPreview(BaseModel):
+    items: list[CartPreviewItem] = Field(max_length=50)
+
+
 # --------------------------------------------------------------------------- responses
 
 
@@ -73,8 +83,9 @@ class LineIssue(BaseModel):
     max: int | None = None
 
 
-class CartLineOut(BaseModel):
-    id: int
+class CartLineFields(BaseModel):
+    """Everything a cart line shows; CartLineOut adds the database id, CartPreviewLineOut a key."""
+
     quantity: int
     product: CartProduct
     variant: CartVariant | None
@@ -88,6 +99,14 @@ class CartLineOut(BaseModel):
     stock_left: int | None
     items: list[CartBundleItem] = []
     issue: LineIssue | None
+
+
+class CartLineOut(CartLineFields):
+    id: int
+
+
+class CartPreviewLineOut(CartLineFields):
+    key: str = Field(description='"<product_id>:<variant_id or 0>", stable for the same product and variant')
 
 
 class DeliveryQuote(BaseModel):
@@ -137,3 +156,14 @@ class MergeReportItem(BaseModel):
 
 class CartMergeOut(CartOut):
     merge_report: list[MergeReportItem]
+
+
+class CartPreviewOut(CartOut):
+    """GET /cart's response for items kept on a device (nothing is stored)."""
+
+    lines: list[CartPreviewLineOut]  # type: ignore[assignment]
+
+
+class CartCountOut(BaseModel):
+    items_count: int = Field(description="Sum of quantities of lines without issues, as in the cart")
+    lines_count: int

@@ -12,11 +12,14 @@ from conftest import bearer, login, register
 
 pytestmark = pytest.mark.anyio
 
+# Public cart routes (the cart a guest keeps on the device); every other cart/favorites route needs login.
+PUBLIC_ROUTES = {("POST", "/api/v1/cart/preview")}
 ROUTES = sorted(
     (method.upper(), path)
     for path, operations in app.openapi()["paths"].items()
     if path.startswith(("/api/v1/cart", "/api/v1/favorites"))
     for method in operations
+    if (method.upper(), path) not in PUBLIC_ROUTES
 )
 
 
@@ -25,7 +28,7 @@ def concrete(path: str) -> str:
 
 
 def test_route_table() -> None:
-    assert len(ROUTES) == 13
+    assert len(ROUTES) == 14
 
 
 @pytest.mark.parametrize(("method", "path"), ROUTES, ids=[f"{m} {p}" for m, p in ROUTES])

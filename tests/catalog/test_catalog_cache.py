@@ -101,7 +101,7 @@ async def test_failed_admin_change_does_not_invalidate(
     assert count == 0
 
 
-async def test_product_page_fresh_after_last_unit_sold_lists_may_be_stale(
+async def test_product_page_and_lists_fresh_after_last_unit_sold(
     client: AsyncClient, customer_headers: dict, shop: dict, count_queries: Any
 ) -> None:
     cream = shop["simple"]
@@ -112,8 +112,12 @@ async def test_product_page_fresh_after_last_unit_sold_lists_may_be_stale(
 
     _, detail = await statements(client, count_queries, f"{PUBLIC}/products/{cream['slug']}")
     assert (detail["in_stock"], detail["stock_status"]) == (False, "out")  # fresh right away
-    count, stale = await statements(client, count_queries, f"{PUBLIC}/products")
-    assert count == 0 and stale == listing  # lists are allowed to be up to 45 s stale
+    # Sold out: the catalog version is bumped, so lists are recomputed and (default setting
+    # catalog_hide_out_of_stock) no longer show it.
+    count, fresh = await statements(client, count_queries, f"{PUBLIC}/products")
+    assert count > 0 and fresh != listing
+    assert cream["id"] in [p["id"] for p in listing["items"]]
+    assert cream["id"] not in [p["id"] for p in fresh["items"]]
     bundle_count, bundle = await statements(client, count_queries, f"{PUBLIC}/products/{shop['bundle']['slug']}")
     assert bundle_count > 0 and bundle["in_stock"] is False  # the bundle containing it too
 

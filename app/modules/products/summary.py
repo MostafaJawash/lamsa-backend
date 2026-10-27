@@ -20,7 +20,14 @@ from app.modules.categories.models import Category
 from app.modules.products.enums import ProductType
 from app.modules.products.models import BundleItem, Product, ProductVariant
 from app.modules.products.visibility import visible_product_condition
-from app.shared.events import DomainEvent, ProductBackInStock, ProductPriceDropped, ProductsChanged, stash
+from app.shared.events import (
+    CatalogChanged,
+    DomainEvent,
+    ProductBackInStock,
+    ProductPriceDropped,
+    ProductsChanged,
+    stash,
+)
 from app.shared.utils.arabic import normalize_arabic
 
 ZERO = Decimal("0.00")
@@ -168,6 +175,7 @@ async def recalculate_product_summary(session: AsyncSession, product_ids: Iterab
     components = await load_bundle_components(session, bundle_ids)
 
     values: list[dict[str, Any]] = []
+    stock_flipped = False
     for p in products:
         if p.type == ProductType.variable:
             summary = summarize_variable(variants.get(p.id, []))
@@ -182,11 +190,16 @@ async def recalculate_product_summary(session: AsyncSession, product_ids: Iterab
         )
         for event in summary_transitions(p, summary):
             stash(session, event)
+        stock_flipped = stock_flipped or (bool(p.visible) and bool(p.old_in_stock) != summary.in_stock)
     await session.execute(update(Product), values)
     _expire(session, Product, ids, ("price_from", "in_stock", "is_on_sale"))
     # Stock or prices of these products (and bundles) changed: their product pages must be fresh
     # right after the commit (cache versions bumped by app.shared.catalog_cache).
     stash(session, ProductsChanged(slugs=tuple(sorted(p.slug for p in products))))
+    # A visible product sold out or came back: browsing hides out-of-stock products (setting
+    # catalog_hide_out_of_stock) and cards show the badge, so every list must be recomputed.
+    if stock_flipped:
+        stash(session, CatalogChanged())
 
 
 def _expire(session: AsyncSession, model: type, ids: set[int], attrs: Sequence[str]) -> None:
