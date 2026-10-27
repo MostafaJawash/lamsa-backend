@@ -103,23 +103,23 @@ CATEGORIES: list[dict[str, Any]] = [
 DELIVERY_METHODS: list[dict[str, Any]] = [
     {
         "code": "home",
-        "name": "توصيل للبيت",
-        "description": "خلال ٢ لـ ٣ أيام عمل",
+        "name": "التوصيل إلى المنزل",
+        "description": "خلال ٢ إلى ٣ أيام عمل",
         "fee": Decimal("4.95"),
         "free_from": Decimal("49.00"),
         "requires_address": True,
     },
     {
         "code": "express",
-        "name": "توصيل سريع",
-        "description": "بنفس اليوم إذا طلبت قبل الساعة ٦",
+        "name": "التوصيل السريع",
+        "description": "في اليوم نفسه عند الطلب قبل الساعة ٦",
         "fee": Decimal("7.95"),
         "free_from": None,
         "requires_address": True,
     },
     {
         "code": "pickup",
-        "name": "استلام من المتجر",
+        "name": "الاستلام من المتجر",
         "description": "جاهز خلال ساعتين",
         "fee": Decimal("0.00"),
         "free_from": None,

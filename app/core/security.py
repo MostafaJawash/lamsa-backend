@@ -130,11 +130,11 @@ def validate_password(password: str, phone: str | None = None) -> None:
     if len(password) < PASSWORD_MIN_LENGTH:
         message = f"كلمة المرور يجب أن تكون {PASSWORD_MIN_LENGTH} أحرف على الأقل."
     elif len(password) > PASSWORD_MAX_LENGTH:
-        message = f"كلمة المرور يجب ألا تزيد عن {PASSWORD_MAX_LENGTH} حرفاً."
+        message = f"يجب ألا تتجاوز كلمة المرور {PASSWORD_MAX_LENGTH} حرفًا."
     elif password.isdigit():
-        message = "كلمة المرور يجب ألا تكون أرقاماً فقط."
+        message = "يجب ألا تتكون كلمة المرور من أرقام فقط."
     elif phone and _matches_phone(password, phone):
-        message = "كلمة المرور يجب ألا تكون رقم الهاتف."
+        message = "يجب ألا تكون كلمة المرور رقم الهاتف."
     else:
         return
     raise ValidationFailed(ErrorCode.WEAK_PASSWORD, message, details=[{"field": "password", "message": message}])

@@ -28,12 +28,12 @@ ADMIN_CANCELLABLE = frozenset(
 TERMINAL = frozenset({OrderStatus.delivered, OrderStatus.cancelled})
 
 LABELS: dict[OrderStatus, str] = {
-    OrderStatus.pending: "استلمنا طلبك",
+    OrderStatus.pending: "تم استلام طلبك",
     OrderStatus.preparing: "قيد التجهيز",
-    OrderStatus.shipped: "انشحن",
+    OrderStatus.shipped: "تم الشحن",
     OrderStatus.ready_for_pickup: "جاهز للاستلام",
-    OrderStatus.delivered: "وصل",
-    OrderStatus.cancelled: "ملغي",
+    OrderStatus.delivered: "تم التوصيل",
+    OrderStatus.cancelled: "ملغى",
 }
 PICKUP_LABELS: dict[OrderStatus, str] = {OrderStatus.delivered: "تم الاستلام"}
 

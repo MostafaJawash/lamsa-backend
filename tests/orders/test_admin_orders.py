@@ -43,7 +43,7 @@ async def test_delivery_workflow(client: AsyncClient, admin_headers: dict, custo
     for step in ("preparing", "shipped", "delivered"):
         detail = ok(await move(client, admin_headers, order["id"], step))
         assert detail["status"] == step and detail["allowed_next_statuses"] == expected_next[step]
-    assert (detail["payment_status"], detail["status_label"], detail["can_cancel"]) == ("paid", "وصل", False)
+    assert (detail["payment_status"], detail["status_label"], detail["can_cancel"]) == ("paid", "تم التوصيل", False)
     assert [(h["from_status"], h["to_status"]) for h in detail["history"]] == [
         (None, "pending"), ("pending", "preparing"), ("preparing", "shipped"), ("shipped", "delivered")]
     admin_name = (await client.get("/api/v1/users/me", headers=admin_headers)).json()["name"]

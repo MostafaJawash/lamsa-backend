@@ -53,7 +53,7 @@ async def test_order_placed_notifies_customer_and_active_admins_only(
 
     placed = await rows(db_session, Notification.type == "order_update")
     assert [(n.user_id, n.title, n.link_type, n.link_value, n.status) for n in placed] == [
-        (customer, f"استلمنا طلبك #{order['id']} ✅", "order", str(order["id"]), "queued")
+        (customer, f"تم استلام طلبك #{order['id']} ✅", "order", str(order["id"]), "queued")
     ]
     assert placed[0].data == {"order_id": order["id"]} and placed[0].target == "user"
 
@@ -64,7 +64,7 @@ async def test_order_placed_notifies_customer_and_active_admins_only(
         assert new_order.title == f"طلب جديد #{order['id']}"
         assert "3" in new_order.body and "24.00" in new_order.body
         assert (new_order.link_type, new_order.link_value) == ("admin_order", str(order["id"]))
-        assert low.title == "Cream: باقي 2 قطع"  # 5 -> 2 crosses the threshold 3
+        assert low.title == "Cream: تبقّى قطعتان"  # 5 -> 2 crosses the threshold 3
         assert (low.link_type, low.link_value) == ("admin_product", str(shop["simple"]["id"]))
 
 
@@ -79,13 +79,13 @@ async def test_status_texts_delivery_and_pickup(
 
     delivery = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)])
     assert await walk(delivery["id"], ["preparing", "shipped", "delivered"]) == [
-        f"استلمنا طلبك #{delivery['id']} ✅", f"طلبك #{delivery['id']} قيد التجهيز", f"طلبك #{delivery['id']} انشحن 🚚",
-        f"وصل طلبك #{delivery['id']}، نتمنى تعجبك المنتجات",
+        f"تم استلام طلبك #{delivery['id']} ✅", f"طلبك #{delivery['id']} قيد التجهيز", f"تم شحن طلبك #{delivery['id']} 🚚",
+        f"تم توصيل طلبك #{delivery['id']}، نتمنى أن تنال المنتجات إعجابك",
     ]
     pickup = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)], method="pickup")
     assert await walk(pickup["id"], ["preparing", "ready_for_pickup", "delivered"]) == [
-        f"استلمنا طلبك #{pickup['id']} ✅", f"طلبك #{pickup['id']} قيد التجهيز", f"طلبك #{pickup['id']} جاهز للاستلام 🛍️",
-        f"تم استلام طلبك #{pickup['id']}، شكراً إلك",
+        f"تم استلام طلبك #{pickup['id']} ✅", f"طلبك #{pickup['id']} قيد التجهيز", f"طلبك #{pickup['id']} جاهز للاستلام 🛍️",
+        f"تم استلام طلبك #{pickup['id']}، شكرًا لك",
     ]
 
 
@@ -95,15 +95,15 @@ async def test_cancellations(
     by_store = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)], method="pickup")
     ok(await client.post(f"{ADMIN_ORDERS}/{by_store['id']}/cancel", json={"reason": "المنتج تالف"}, headers=admin_headers))
     cancelled = (await rows(db_session, Notification.type == "order_update"))[-1]
-    assert (cancelled.title, cancelled.body) == (f"انلغى طلبك #{by_store['id']}", "المنتج تالف")
+    assert (cancelled.title, cancelled.body) == (f"أُلغي طلبك #{by_store['id']}", "المنتج تالف")
 
     by_customer = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)], method="pickup")
     before = len(await rows(db_session, Notification.type == "order_update"))
     ok(await client.post(f"{ORDERS}/{by_customer['id']}/cancel", json={"reason": "غيرت رأيي"}, headers=customer_headers))
     assert len(await rows(db_session, Notification.type == "order_update")) == before  # nothing for the customer
-    alerts = [n for n in await rows(db_session, Notification.type == "admin_alert") if n.title.startswith("الزبون")]
+    alerts = [n for n in await rows(db_session, Notification.type == "admin_alert") if n.title.startswith("ألغى العميل")]
     assert {n.user_id for n in alerts} == {admins["main"], admins["second"]}
-    assert all((n.title, n.body) == (f"الزبون لغى الطلب #{by_customer['id']}", "غيرت رأيي") for n in alerts)
+    assert all((n.title, n.body) == (f"ألغى العميل الطلب #{by_customer['id']}", "غيرت رأيي") for n in alerts)
 
 
 async def test_stock_out_alert_with_variant_label(
@@ -113,12 +113,12 @@ async def test_stock_out_alert_with_variant_label(
     ok(await client.post(f"{ADMIN}/products/{lip['id']}/variants/{pink['id']}/stock-adjust", json={"delta": -2}, headers=admin_headers))
     out = await rows(db_session, Notification.type == "admin_alert")
     assert {n.user_id for n in out} == {admins["main"], admins["second"]}
-    assert {n.title for n in out} == {"Lipstick (وردي) خلص من المخزون"}
+    assert {n.title for n in out} == {"نفد مخزون Lipstick (وردي)"}
     # A newly demoted admin gets nothing new.
     await demote(db_session, admins["second"])
     ok(await client.post(f"{ADMIN}/products/{shop['simple']['id']}/stock-adjust", json={"delta": -5}, headers=admin_headers))
     newest = (await rows(db_session, Notification.type == "admin_alert"))[len(out):]
-    assert [(n.user_id, n.title) for n in newest] == [(admins["main"], "Cream خلص من المخزون")]
+    assert [(n.user_id, n.title) for n in newest] == [(admins["main"], "نفد مخزون Cream")]
 
 
 # ----------------------------------------------------------------------------- favorites

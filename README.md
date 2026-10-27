@@ -385,7 +385,7 @@ By product type:
 
 Exact stock is never public. `stock_status` is one of:
 - `in_stock`
-- `low`: 1 to `low_stock_threshold` left (a store setting, default 3). `stock_left` then holds the count, for example "باقي ٣ قطع بس".
+- `low`: 1 to `low_stock_threshold` left (a store setting, default 3). `stock_left` then holds the count, for example "لم يتبقَّ سوى ٣".
 - `out`
 
 ### Out of stock while browsing
@@ -530,12 +530,12 @@ Stock is taken when the order is placed and given back when it's cancelled. If t
 
 | status | label (delivery) | label (pickup) |
 |---|---|---|
-| `pending` | استلمنا طلبك | استلمنا طلبك |
+| `pending` | تم استلام طلبك | تم استلام طلبك |
 | `preparing` | قيد التجهيز | قيد التجهيز |
-| `shipped` | انشحن | (not used) |
+| `shipped` | تم الشحن | (not used) |
 | `ready_for_pickup` | (not used) | جاهز للاستلام |
 | `delivered` | وصل | تم الاستلام |
-| `cancelled` | ملغي | ملغي |
+| `cancelled` | ملغى | ملغى |
 
 - Delivery: `pending → preparing → shipped → delivered`. Pickup: `pending → preparing → ready_for_pickup → delivered`.
 - `status_label` is returned with every order; show it as is.
@@ -575,20 +575,20 @@ Every notification is a row in the user's **inbox**. It is also pushed (FCM) to 
 
 | `type` | Who | When | Title (Arabic, from `app/modules/notifications/templates.py`) |
 |---|---|---|---|
-| `order_update` | the customer | order placed | استلمنا طلبك #<id> ✅ |
+| `order_update` | the customer | order placed | تم استلام طلبك #<id> ✅ |
 | | | preparing | طلبك #<id> قيد التجهيز |
-| | | shipped | طلبك #<id> انشحن 🚚 |
+| | | shipped | تم شحن طلبك #<id> 🚚 |
 | | | ready for pickup | طلبك #<id> جاهز للاستلام 🛍️ |
-| | | delivered (delivery / pickup) | وصل طلبك #<id>، نتمنى تعجبك المنتجات / تم استلام طلبك #<id>، شكراً إلك |
-| | | cancelled by the store | انلغى طلبك #<id> (the reason is the body) |
+| | | delivered (delivery / pickup) | تم توصيل طلبك #<id>، نتمنى أن تنال المنتجات إعجابك / تم استلام طلبك #<id>، شكرًا لك |
+| | | cancelled by the store | أُلغي طلبك #<id> (the reason is the body) |
 | `admin_alert` | every **active** admin when the alert is created | new order | طلب جديد #<id> (items, total and delivery method in the body) |
-| | | customer cancelled | الزبون لغى الطلب #<id> |
-| | | stock low / out | <product> (<variant>): باقي <n> قطع / <product> (<variant>) خلص من المخزون |
+| | | customer cancelled | ألغى العميل الطلب #<id> |
+| | | stock low / out | <product> (<variant>): تبقّى <counted pieces> / نفد مخزون <product> (<variant>) |
 | `marketing` | everyone | an admin campaign | (written by the admin) |
 | `message` | one user | an admin message | (written by the admin) |
-| `favorite_back_in_stock` | fans of the product | it is in stock again | رجع للمخزون 🎉 |
-| `favorite_price_drop` | fans of the product | a sale starts, or `price_from` drops by at least `price_drop_min_percent` (5) | نزل السعر 🔥 |
-| `cart_reminder` | the cart owner | `cart_reminder_after_hours` (24) after the last cart change, with no order since | سلتك ناطرتك 🛍️ (the body names the first available product and the number of other lines) |
+| `favorite_back_in_stock` | fans of the product | it is in stock again | عاد إلى المخزون 🎉 |
+| `favorite_price_drop` | fans of the product | a sale starts, or `price_from` drops by at least `price_drop_min_percent` (5) | انخفض السعر 🔥 |
+| `cart_reminder` | the cart owner | `cart_reminder_after_hours` (24) after the last cart change, with no order since | سلتك بانتظارك 🛍️ (the body names the first available product and the number of other lines) |
 
 Rules:
 - When the **customer** cancels their own order, the customer gets nothing (the admins get an alert).

@@ -43,9 +43,9 @@ async def test_place_mixed_cart_with_snapshots(
     assert response.status_code == 201, response.text
     order = response.json()
 
-    assert order["id"] >= 1001 and order["status"] == "pending" and order["status_label"] == "استلمنا طلبك"
+    assert order["id"] >= 1001 and order["status"] == "pending" and order["status_label"] == "تم استلام طلبك"
     assert (order["payment_method"], order["payment_status"]) == ("cod", "pending")
-    assert order["delivery"] == {"code": "home", "name": "توصيل للبيت"}
+    assert order["delivery"] == {"code": "home", "name": "التوصيل إلى المنزل"}
     assert order["shipping_address"] == {"label": "البيت", "city": "Berlin", "street": "Hauptstr. 1", "building": "3. OG", "notes": "Klingel 2"}
     assert (order["customer_notes"], order["gift_message"]) == ("بعد الساعة ٥", None)
     # 8.00 + 30.00 + 25.00 = 63.00 >= 49: free home delivery.

@@ -34,7 +34,7 @@ async def test_list_detail_and_foreign_order(client: AsyncClient, customer_heade
     assert [o["id"] for o in page["items"]] == [second["id"], first["id"]] and page["total"] == 2
     row = page["items"][0]
     assert (row["status"], row["status_label"], row["items_count"], row["total"], row["delivery_method_name"]) == (
-        "pending", "استلمنا طلبك", 2, "24.00", "استلام من المتجر")
+        "pending", "تم استلام طلبك", 2, "24.00", "الاستلام من المتجر")
     assert row["image"] == shop["color_images"]["lip_red"]["urls"]
     paged = ok(await client.get(ORDERS, params={"page_size": 1, "page": 2}, headers=customer_headers))
     assert [o["id"] for o in paged["items"]] == [first["id"]] and paged["total"] == 2
@@ -58,7 +58,7 @@ async def test_cancel_restores_stock_including_bundles(
     assert await stocks(db_session, shop) == (before[0] - 3, before[1] - 1, before[2] - 2)
 
     cancelled = ok(await client.post(f"{ORDERS}/{order['id']}/cancel", json={"reason": "  غيرت رأيي  "}, headers=customer_headers))
-    assert (cancelled["status"], cancelled["status_label"], cancelled["can_cancel"], cancelled["cancel_reason"]) == ("cancelled", "ملغي", False, "غيرت رأيي")
+    assert (cancelled["status"], cancelled["status_label"], cancelled["can_cancel"], cancelled["cancel_reason"]) == ("cancelled", "ملغى", False, "غيرت رأيي")
     assert [(s["status"], s["is_current"]) for s in cancelled["timeline"]] == [("pending", False), ("cancelled", True)]
     assert cancelled["timeline"][-1]["cancel_reason"] == "غيرت رأيي"
     assert await stocks(db_session, shop) == before

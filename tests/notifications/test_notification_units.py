@@ -30,30 +30,39 @@ def make_settings(**values: Any) -> Settings:
 
 
 def test_customer_order_texts() -> None:
-    assert templates.order_placed(12).title == "استلمنا طلبك #12 ✅"
+    assert templates.order_placed(12).title == "تم استلام طلبك #12 ✅"
     assert templates.order_preparing(12).title == "طلبك #12 قيد التجهيز"
-    assert templates.order_shipped(12).title == "طلبك #12 انشحن 🚚"
+    assert templates.order_shipped(12).title == "تم شحن طلبك #12 🚚"
     assert templates.order_ready_for_pickup(12).title == "طلبك #12 جاهز للاستلام 🛍️"
-    assert templates.order_delivered(12, is_pickup=False).title == "وصل طلبك #12، نتمنى تعجبك المنتجات"
-    assert templates.order_delivered(12, is_pickup=True).title == "تم استلام طلبك #12، شكراً إلك"
-    cancelled = templates.order_cancelled_by_store(12, "المنتج خلص")
-    assert (cancelled.title, cancelled.body) == ("انلغى طلبك #12", "المنتج خلص")
+    assert templates.order_delivered(12, is_pickup=False).title == "تم توصيل طلبك #12، نتمنى أن تنال المنتجات إعجابك"
+    assert templates.order_delivered(12, is_pickup=True).title == "تم استلام طلبك #12، شكرًا لك"
+    cancelled = templates.order_cancelled_by_store(12, "المنتج غير متوفر")
+    assert (cancelled.title, cancelled.body) == ("أُلغي طلبك #12", "المنتج غير متوفر")
 
 
 def test_admin_texts() -> None:
     new = templates.admin_new_order(7, 3, "24.00", "استلام من المتجر")
     assert new.title == "طلب جديد #7"
     assert "3" in new.body and "24.00" in new.body and "استلام من المتجر" in new.body
-    assert templates.admin_customer_cancelled(7, None).title == "الزبون لغى الطلب #7"
-    assert templates.admin_stock_low("Lipstick", "أحمر", 2).title == "Lipstick (أحمر): باقي 2 قطع"
-    assert templates.admin_stock_low("Cream", None, 1).title == "Cream: باقي 1 قطع"
-    assert templates.admin_stock_out("Lipstick", "وردي").title == "Lipstick (وردي) خلص من المخزون"
+    assert templates.admin_customer_cancelled(7, None).title == "ألغى العميل الطلب #7"
+    assert templates.admin_stock_low("Lipstick", "أحمر", 2).title == "Lipstick (أحمر): تبقّى قطعتان"
+    assert templates.admin_stock_low("Cream", None, 1).title == "Cream: تبقّى قطعة واحدة"
+    assert templates.admin_stock_out("Lipstick", "وردي").title == "نفد مخزون Lipstick (وردي)"
+
+
+def test_counted_nouns_follow_arabic_number_agreement() -> None:
+    assert [templates._products_count(n) for n in (1, 2, 3, 11, 100)] == [
+        "منتج واحد", "منتجان", "3 منتجات", "11 منتجًا", "100 منتج"
+    ]
+    assert [templates._pieces_count(n) for n in (1, 2, 3, 11)] == [
+        "قطعة واحدة", "قطعتان", "3 قطع", "11 قطعة"
+    ]
 
 
 def test_cart_reminder_text_mentions_first_product_and_others() -> None:
     assert "Cream" in templates.cart_reminder("Cream", 0).body
     many = templates.cart_reminder("Cream", 2).body
-    assert "Cream" in many and "2" in many
+    assert many == "Cream ومنتجان آخران بانتظارك في السلة."
 
 
 def test_texts_are_clipped_to_column_sizes() -> None:

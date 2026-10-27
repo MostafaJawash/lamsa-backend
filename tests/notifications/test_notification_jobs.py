@@ -117,7 +117,7 @@ async def test_cart_reminder_once_per_cart_change(
     assert await jobs.cart_reminders() == 1
     (reminder,) = await rows(db_session, Notification.type == "cart_reminder")
     assert reminder.user_id == user_id and reminder.status == "queued" and reminder.link_type == "none"
-    assert "Cream" in reminder.body and "1" in reminder.body  # the first product and one other line
+    assert reminder.body == "Cream ومنتج آخر بانتظارك في السلة."
     assert await jobs.cart_reminders() == 0  # once per cart change
 
     frozen_clock.advance(minutes=1)
@@ -153,7 +153,7 @@ async def test_cart_reminder_skips(
     assert await jobs.cart_reminders() == 1
     (reminder,) = await rows(db_session, Notification.type == "cart_reminder")
     assert reminder.user_id == first_available
-    assert reminder.body.startswith("Cream") and "1" in reminder.body  # the hidden lipstick still counts as a line
+    assert reminder.body == "Cream ومنتج آخر بانتظارك في السلة."  # the hidden lipstick still counts
     assert unavailable not in {reminder.user_id}
 
 

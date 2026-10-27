@@ -127,7 +127,7 @@ class PushTestIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(default="إشعار تجريبي", min_length=1, max_length=150)
-    body: str = Field(default="إذا وصلك هالإشعار، الإعدادات تمام ✅", min_length=1, max_length=500)
+    body: str = Field(default="إذا وصلك هذا الإشعار، فالإعدادات تعمل جيدًا ✅", min_length=1, max_length=500)
 
 
 class PushTestResultOut(BaseModel):

@@ -47,7 +47,7 @@ async def test_order_update_push_payload_channel_and_badge(
     assert await dispatch_due() == 2  # the customer's update and the admin alert
     by_token = {m.token: m for m in pushes.sent}
     customer = by_token["customer-phone"]
-    assert customer.title == f"استلمنا طلبك #{order['id']} ✅"
+    assert customer.title == f"تم استلام طلبك #{order['id']} ✅"
     assert customer.channel == "orders" and customer.badge == 1
     assert customer.data == {"notification_id": customer.data["notification_id"], "type": "order_update",
                              "link_type": "order", "link_value": str(order["id"]), "order_id": str(order["id"])}
