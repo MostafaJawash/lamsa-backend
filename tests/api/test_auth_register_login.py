@@ -59,7 +59,7 @@ async def test_register_stores_argon2_hash_and_last_login(client: AsyncClient, d
 async def test_register_phone_taken(client: AsyncClient) -> None:
     await register(client, 1)
     response = await client.post(
-        "/api/v1/auth/register", json={"name": "Other", "phone": "0151 234567 01", "password": PASSWORD}
+        "/api/v1/auth/register", json={"name": "Other", "phone": "0933 123 401", "password": PASSWORD}
     )
     assert response.status_code == 409
     assert error_code(response) == "PHONE_TAKEN"
@@ -67,12 +67,21 @@ async def test_register_phone_taken(client: AsyncClient) -> None:
 
 @pytest.mark.parametrize(
     "raw",
-    ["015123456702", "0151 2345 6702", "+49 151 23456702", "0049 151 23456702", "+49-151-234-567-02", "(0151) 23456702"],
+    ["0933123402", "0933 123 402", "+963 933 123 402", "00963 933 123 402", "+963-933-123-402"],
 )
 async def test_register_normalizes_phone_formats(client: AsyncClient, raw: str) -> None:
     response = await client.post("/api/v1/auth/register", json={"name": "A", "phone": raw, "password": PASSWORD})
     assert response.status_code == 201, response.text
     assert response.json()["user"]["phone"] == phone(2)
+
+
+async def test_register_accepts_an_international_foreign_number(client: AsyncClient) -> None:
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={"name": "Abroad", "phone": "+49 151 23456789", "password": PASSWORD},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["user"]["phone"] == "+4915123456789"
 
 
 @pytest.mark.parametrize("raw", ["123", "abc", "+49 151", "0000000000", "+999 1234567"])
@@ -88,8 +97,8 @@ async def test_register_rejects_invalid_phone(client: AsyncClient, raw: str) -> 
         ("short1", "8"),
         ("x" * 129, "128"),
         ("1234567890", "أرقام"),
-        ("+4915123456703", "رقم الهاتف"),
-        ("0151 2345 6703", "رقم الهاتف"),
+        ("+963933123403", "رقم الهاتف"),
+        ("0933 123 403", "رقم الهاتف"),
     ],
 )
 async def test_register_rejects_weak_passwords(client: AsyncClient, password: str, fragment: str) -> None:
@@ -125,7 +134,7 @@ async def test_login_success_updates_last_login(client: AsyncClient, db_session:
     frozen_clock.advance(hours=1)
 
     response = await client.post(
-        "/api/v1/auth/login", json={"phone": "0151 2345 6705", "password": PASSWORD, "device_name": "Pixel 8"}
+        "/api/v1/auth/login", json={"phone": "0933 123 405", "password": PASSWORD, "device_name": "Pixel 8"}
     )
 
     assert response.status_code == 200, response.text

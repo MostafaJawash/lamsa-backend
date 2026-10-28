@@ -32,6 +32,69 @@ async def stock_of(session: AsyncSession, product_id: int | None = None, variant
 # ------------------------------------------------------------------------- placement
 
 
+async def test_mixed_currency_order_keeps_separate_totals_and_requires_exact_map(
+    client: AsyncClient,
+    admin_headers: dict[str, str],
+    customer_headers: dict[str, str],
+    shop: dict[str, Any],
+) -> None:
+    ok(
+        await client.patch(
+            f"{ADMIN}/products/{shop['perfume']['id']}",
+            json={"currency": "USD"},
+            headers=admin_headers,
+        )
+    )
+    ok(await add(client, customer_headers, shop["simple"]["id"], quantity=2), 201)
+    ok(
+        await add(
+            client,
+            customer_headers,
+            shop["perfume"]["id"],
+            shop["p50"]["id"],
+            quantity=1,
+        ),
+        201,
+    )
+    destination = await address(client, customer_headers)
+
+    incomplete = await place(
+        client,
+        customer_headers,
+        address_id=destination["id"],
+        total={"SYP": "15016.00"},
+    )
+    assert incomplete.status_code == 409
+    assert code_of(incomplete) == "PRICE_CHANGED"
+    assert incomplete.json()["error"]["details"]["totals"] == [
+        {"currency": "SYP", "amount": "15016.00"},
+        {"currency": "USD", "amount": "20.00"},
+    ]
+
+    response = await place(client, customer_headers, address_id=destination["id"])
+    assert response.status_code == 201, response.text
+    order = response.json()
+    assert order["totals"] == [
+        {
+            "currency": "SYP",
+            "subtotal": "16.00",
+            "discount": "0.00",
+            "shipping_fee": "15000.00",
+            "total": "15016.00",
+            "is_legacy": False,
+        },
+        {
+            "currency": "USD",
+            "subtotal": "20.00",
+            "discount": "0.00",
+            "shipping_fee": "0.00",
+            "total": "20.00",
+            "is_legacy": False,
+        },
+    ]
+    assert {item["currency"] for item in order["items"]} == {"SYP", "USD"}
+
+
 async def test_place_mixed_cart_with_snapshots(
     client: AsyncClient, customer_headers: dict, shop: dict, db_session: AsyncSession
 ) -> None:
@@ -45,16 +108,26 @@ async def test_place_mixed_cart_with_snapshots(
 
     assert order["id"] >= 1001 and order["status"] == "pending" and order["status_label"] == "تم استلام طلبك"
     assert (order["payment_method"], order["payment_status"]) == ("cod", "pending")
-    assert order["delivery"] == {"code": "home", "name": "التوصيل إلى المنزل"}
-    assert order["shipping_address"] == {"label": "البيت", "city": "Berlin", "street": "Hauptstr. 1", "building": "3. OG", "notes": "Klingel 2"}
+    assert order["delivery"] == {
+        "code": "damascus_courier", "name": "التوصيل داخل دمشق",
+        "currency": "SYP", "fee_paid_to_carrier": False,
+    }
+    assert order["shipping_address"] == {
+        "label": "البيت", "governorate": "damascus", "area": "المزة",
+        "details": "شارع الجلاء، بناء ٣، الطابق الثاني",
+        "latitude": None, "longitude": None, "notes": "يرجى الاتصال قبل الوصول",
+    }
     assert (order["customer_notes"], order["gift_message"]) == ("بعد الساعة ٥", None)
-    # 8.00 + 30.00 + 25.00 = 63.00 >= 49: free home delivery.
-    assert (order["subtotal"], order["discount"], order["shipping_fee"], order["total"]) == ("63.00", "0.00", "0.00", "63.00")
+    assert order["totals"] == [{
+        "currency": "SYP", "subtotal": "63.00", "discount": "0.00",
+        "shipping_fee": "15000.00", "total": "15063.00", "is_legacy": False,
+    }]
     assert order["can_cancel"] is True
     assert [s["status"] for s in order["timeline"]] == ["pending", "preparing", "shipped", "delivered"]
     assert order["timeline"][0]["is_current"] and order["timeline"][0]["reached_at"] and order["timeline"][1]["reached_at"] is None
 
     items = {i["name"]: i for i in order["items"]}
+    assert all(item["currency"] == "SYP" for item in items.values())
     assert (items["Cream"]["unit_price"], items["Cream"]["line_total"], items["Cream"]["variant_label"]) == ("8.00", "8.00", None)
     assert items["Perfume"]["variant_label"] == "أحمر، 100 ml" and items["Perfume"]["image"] == shop["color_images"]["perfume_red"]["urls"]
     assert items["Box"]["bundle_contents"] == [
@@ -101,8 +174,12 @@ async def test_pickup_and_address_rules(
     foreign = (await address(client, other_user))["id"]
     foreign_address = await place(client, customer_headers, method="home", address_id=foreign)
     assert foreign_address.status_code == 404 and code_of(foreign_address) == "ADDRESS_NOT_FOUND"
-    pickup_with_address = await place(client, customer_headers, method="pickup", address_id=addr["id"])
-    assert pickup_with_address.status_code == 422 and code_of(pickup_with_address) == "VALIDATION_ERROR"
+    aleppo = await address(client, customer_headers, governorate="aleppo", area="الجميلية")
+    wrong_governorate = await place(
+        client, customer_headers, method="damascus_courier", address_id=aleppo["id"]
+    )
+    assert wrong_governorate.status_code == 422
+    assert code_of(wrong_governorate) == "DELIVERY_METHOD_NOT_AVAILABLE"
     unknown = await place(client, customer_headers, method="drone", total="8.00")
     assert unknown.status_code == 422 and code_of(unknown) == "DELIVERY_METHOD_NOT_FOUND"
 
@@ -110,22 +187,24 @@ async def test_pickup_and_address_rules(
 
     from app.modules.delivery.models import DeliveryMethod
 
-    await db_session.execute(update(DeliveryMethod).where(DeliveryMethod.code == "express").values(is_active=False))
+    await db_session.execute(
+        update(DeliveryMethod).where(DeliveryMethod.code == "province_shipping").values(is_active=False)
+    )
     await db_session.commit()
-    inactive = await place(client, customer_headers, method="express", address_id=addr["id"], total="15.95")
+    inactive = await place(
+        client, customer_headers, method="province_shipping", address_id=aleppo["id"], total="8.00"
+    )
     assert code_of(inactive) == "DELIVERY_METHOD_NOT_FOUND"
 
-    pickup = await place(client, customer_headers, method="pickup")
-    assert pickup.status_code == 201
-    data = pickup.json()
-    assert data["shipping_address"] is None and data["shipping_fee"] == "0.00" and data["total"] == "8.00"
-    assert [s["status"] for s in data["timeline"]] == ["pending", "preparing", "ready_for_pickup", "delivered"]
-    assert data["timeline"][-1]["label"] == "تم الاستلام"
+    assert (await place(client, customer_headers, method="pickup", address_id=addr["id"])).status_code == 201
 
 
 async def test_delivery_fee_below_free_threshold(client: AsyncClient, customer_headers: dict, shop: dict) -> None:
     order = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 2)])
-    assert (order["subtotal"], order["shipping_fee"], order["total"]) == ("16.00", "4.95", "20.95")
+    assert order["totals"] == [{
+        "currency": "SYP", "subtotal": "16.00", "discount": "0.00",
+        "shipping_fee": "15000.00", "total": "15016.00", "is_legacy": False,
+    }]
 
 
 async def test_empty_cart_and_cart_with_issues(
@@ -151,8 +230,9 @@ async def test_price_changed(
     response = await place(client, customer_headers, method="pickup", total=seen)
     assert response.status_code == 409 and code_of(response) == "PRICE_CHANGED"
     details = response.json()["error"]["details"]
-    assert (details["expected_total"], details["total"]) == ("16.00", "15.00")
-    assert details["cart"]["subtotal"] == "15.00"
+    assert details["expected_totals"] == [{"currency": "SYP", "amount": "15016.00"}]
+    assert details["totals"] == [{"currency": "SYP", "amount": "15015.00"}]
+    assert details["cart"]["subtotals"] == [{"currency": "SYP", "amount": "15.00"}]
     assert await stock_of(db_session, shop["simple"]["id"]) == 5  # nothing saved
     assert await db_session.scalar(select(func.count()).select_from(Order)) == 0
     assert len((await cart(client, customer_headers))["lines"]) == 1
@@ -168,7 +248,7 @@ async def test_insufficient_stock_detected_at_placement(
 
     await db_session.execute(update(Product).where(Product.id == shop["simple"]["id"]).values(stock=4))
     await db_session.commit()
-    response = await place(client, customer_headers, method="pickup", total="58.00")
+    response = await place(client, customer_headers, method="pickup", total="15058.00")
     assert response.status_code == 409 and code_of(response) == "INSUFFICIENT_STOCK"
     assert response.json()["error"]["details"] == {"product_id": shop["simple"]["id"], "variant_id": None, "available": 4}
     assert await stock_of(db_session, shop["simple"]["id"]) == 4 and await stock_of(db_session, variant_id=shop["red"]["id"]) == 5

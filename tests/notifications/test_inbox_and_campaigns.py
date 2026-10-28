@@ -19,8 +19,8 @@ from notification_helpers import ADMIN_NOTIFICATIONS, NOTIFICATIONS, PREFERENCES
 
 pytestmark = pytest.mark.anyio
 
-NOON = datetime(2026, 7, 1, 10, 0)  # 12:00 in Berlin
-NIGHT = datetime(2026, 7, 1, 20, 0)  # 22:00 in Berlin
+NOON = datetime(2026, 7, 1, 9, 0)  # 12:00 in Damascus
+NIGHT = datetime(2026, 7, 1, 20, 0)  # 23:00 in Damascus
 
 
 async def _send(session: AsyncSession, *drafts: Draft, admin_ids: tuple[int, ...] = ()) -> None:
@@ -143,7 +143,7 @@ async def test_create_campaigns_now_scheduled_and_deferred(
     at_night = ok(await client.post(ADMIN_NOTIFICATIONS, json={
         "audience": "all", "title": "Night", "body": "Sale", "scheduled_at": "2026-07-02T23:30:00+02:00"}, headers=admin_headers), 201)
     assert (at_night["status"], at_night["scheduled_at"], at_night["deferred_by_quiet_hours"]) == (
-        "scheduled", "2026-07-03T07:00:00", True)
+        "scheduled", "2026-07-03T06:00:00", True)
     # A message to one user ignores quiet hours.
     frozen_clock.now = NIGHT
     message = ok(await client.post(ADMIN_NOTIFICATIONS, json={"audience": "user", "user_id": customer, "title": "x", "body": "y"},
@@ -156,7 +156,7 @@ async def test_create_campaigns_now_scheduled_and_deferred(
 @pytest.mark.parametrize(
     ("body", "code"),
     [
-        ({"audience": "all", "scheduled_at": "2026-07-01T10:00:30"}, "INVALID_SCHEDULE"),  # under a minute ahead
+        ({"audience": "all", "scheduled_at": "2026-07-01T09:00:30"}, "INVALID_SCHEDULE"),  # under a minute ahead
         ({"audience": "all", "scheduled_at": "2026-07-01T09:00:00"}, "INVALID_SCHEDULE"),  # the past
         ({"audience": "all", "scheduled_at": "2026-09-30T10:00:01"}, "INVALID_SCHEDULE"),  # over 90 days
         ({"audience": "all", "link": {"type": "admin_order", "value": "1"}}, "INVALID_LINK"),
@@ -188,8 +188,8 @@ async def test_edit_cancel_and_send_now_only_while_scheduled(
     edited = ok(await client.patch(url, json={"title": "Later!", "link": {"type": "new"},
                                               "scheduled_at": "2026-07-02T21:30:00"}, headers=admin_headers))
     assert (edited["title"], edited["link"]["type"]) == ("Later!", "new")
-    assert (edited["scheduled_at"], edited["deferred_by_quiet_hours"]) == ("2026-07-03T07:00:00", True)
-    assert code_of(await client.patch(url, json={"scheduled_at": "2026-07-01T10:00:10"}, headers=admin_headers)) == "INVALID_SCHEDULE"
+    assert (edited["scheduled_at"], edited["deferred_by_quiet_hours"]) == ("2026-07-03T06:00:00", True)
+    assert code_of(await client.patch(url, json={"scheduled_at": "2026-07-01T09:00:10"}, headers=admin_headers)) == "INVALID_SCHEDULE"
 
     sent = ok(await client.post(f"{url}/send-now", headers=admin_headers))
     assert (sent["status"], sent["scheduled_at"], sent["deferred_by_quiet_hours"]) == ("queued", NOON.isoformat(), False)

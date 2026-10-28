@@ -9,6 +9,8 @@ from app.modules.brands.router import router as brands_router
 from app.modules.cart.router import router as cart_router
 from app.modules.categories.router import admin_router as admin_categories_router
 from app.modules.categories.router import router as categories_router
+from app.modules.delivery.router import admin_router as admin_delivery_router
+from app.modules.delivery.router import router as delivery_router
 from app.modules.favorites.router import router as favorites_router
 from app.modules.orders.router import admin_router as admin_orders_router
 from app.modules.notifications.router import admin_router as admin_notifications_router
@@ -29,6 +31,7 @@ api_router.include_router(notification_preferences_router)
 api_router.include_router(addresses_router)
 api_router.include_router(devices_router)
 api_router.include_router(categories_router)
+api_router.include_router(delivery_router)
 api_router.include_router(brands_router)
 api_router.include_router(products_router)
 api_router.include_router(cart_router)
@@ -44,3 +47,4 @@ api_router.include_router(admin_orders_router)
 api_router.include_router(admin_notifications_router)
 api_router.include_router(admin_banners_router)
 api_router.include_router(admin_settings_router)
+api_router.include_router(admin_delivery_router)

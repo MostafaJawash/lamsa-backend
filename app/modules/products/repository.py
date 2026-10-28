@@ -37,7 +37,8 @@ from app.modules.settings.service import setting_subquery
 from app.shared.catalog import json_path
 
 CARD_COLUMNS = (
-    Product.id, Product.slug, Product.name, Product.type, Product.price, Product.sale_price, Product.price_from,
+    Product.id, Product.slug, Product.name, Product.type, Product.currency,
+    Product.price, Product.sale_price, Product.price_from,
     Product.is_new, Product.is_on_sale, Product.in_stock,
     Brand.id.label("brand_id"), Brand.name.label("brand_name"), Brand.slug.label("brand_slug"),
     Category.id.label("category_id"), Category.name.label("category_name"), Category.slug.label("category_slug"),
@@ -46,7 +47,8 @@ CARD_COLUMNS = (
 
 def card_row(r: Any) -> CardRow:
     return CardRow(
-        id=r.id, slug=r.slug, name=r.name, type=r.type, price=r.price, sale_price=r.sale_price,
+        id=r.id, slug=r.slug, name=r.name, type=r.type, currency=r.currency,
+        price=r.price, sale_price=r.sale_price,
         price_from=r.price_from, is_new=r.is_new, is_on_sale=r.is_on_sale, in_stock=r.in_stock,
         brand=BrandRef(id=r.brand_id, name=r.brand_name, slug=r.brand_slug) if r.brand_id is not None else None,
         category=CategoryRef(id=r.category_id, name=r.category_name, slug=r.category_slug),
@@ -64,10 +66,11 @@ def card_select(*extra: Any) -> Select[Any]:
 def _order(sort: ProductSort, filters: ProductFilters) -> list[Any]:
     if sort == ProductSort.relevance and filters.search:
         return [search_condition(filters.search).desc(), Product.id.desc()]
+    currency_order = case((Product.currency == "SYP", 0), (Product.currency == "USD", 1), else_=2)
     if sort == ProductSort.price_asc:
-        return [Product.price_from.asc(), Product.id.desc()]
+        return [currency_order.asc(), Product.price_from.asc(), Product.id.desc()]
     if sort == ProductSort.price_desc:
-        return [Product.price_from.desc(), Product.id.desc()]
+        return [currency_order.asc(), Product.price_from.desc(), Product.id.desc()]
     return [Product.created_at.desc(), Product.id.desc()]
 
 
@@ -288,15 +291,14 @@ async def brand_facet(session: AsyncSession, filters: ProductFilters) -> list[tu
     return [(r[0], r[1], int(r[2])) for r in rows]
 
 
-async def price_facet(session: AsyncSession, filters: ProductFilters) -> tuple[Decimal | None, Decimal | None]:
-    row = (
-        await session.execute(
-            select(func.min(Product.price_from), func.max(Product.price_from)).where(
-                *build_conditions(filters, exclude="price")
-            )
-        )
-    ).one()
-    return row[0], row[1]
+async def price_facets(session: AsyncSession, filters: ProductFilters) -> list[tuple[str, Decimal, Decimal]]:
+    rows = await session.execute(
+        select(Product.currency, func.min(Product.price_from), func.max(Product.price_from))
+        .where(*build_conditions(filters, exclude="price"))
+        .group_by(Product.currency)
+        .order_by(case((Product.currency == "SYP", 0), (Product.currency == "USD", 1), else_=2))
+    )
+    return [(currency, low, high) for currency, low, high in rows]
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, StringConstraints
 from app.modules.orders.enums import OrderStatus, PaymentMethod, PaymentStatus
 from app.shared.money import MoneyIn, MoneyOut
 from app.shared.schemas import ImageUrls
+from app.shared.enums import Currency
 
 Note = Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)]
 
@@ -17,6 +18,12 @@ class OrderSort(StrEnum):
     total_desc = "total_desc"
 
 
+class OrderStatusGroup(StrEnum):
+    active = "active"
+    completed = "completed"
+    cancelled = "cancelled"
+
+
 # ----------------------------------------------------------------------------- requests
 
 
@@ -25,7 +32,7 @@ class OrderCreate(BaseModel):
     address_id: int | None = None
     customer_notes: Note | None = None
     gift_message: Note | None = None
-    expected_total: MoneyIn = Field(description="The total shown on the checkout screen")
+    expected_totals: dict[Currency, MoneyIn] = Field(min_length=1, max_length=2)
 
 
 class OrderCancel(BaseModel):
@@ -48,6 +55,8 @@ class StatusChange(BaseModel):
 class DeliveryOut(BaseModel):
     code: str
     name: str
+    currency: str
+    fee_paid_to_carrier: bool
 
 
 class OrderItemOut(BaseModel):
@@ -57,6 +66,7 @@ class OrderItemOut(BaseModel):
     variant_label: str | None
     options: dict[str, Any] | None
     image: ImageUrls | None
+    currency: str
     unit_price: MoneyOut
     quantity: int
     line_total: MoneyOut
@@ -77,7 +87,7 @@ class OrderSummaryOut(BaseModel):
     status: OrderStatus
     status_label: str
     items_count: int
-    total: MoneyOut
+    totals: list["OrderTotalOut"]
     image: ImageUrls | None = Field(description="First item's image")
     delivery_method_name: str
 
@@ -86,6 +96,7 @@ class AdminOrderSummaryOut(OrderSummaryOut):
     user_id: int
     customer_name: str
     customer_phone: str
+    map_url: str | None
 
 
 class OrderDetailOut(BaseModel):
@@ -100,10 +111,7 @@ class OrderDetailOut(BaseModel):
     customer_notes: str | None
     gift_message: str | None
     items: list[OrderItemOut]
-    subtotal: MoneyOut
-    discount: MoneyOut
-    shipping_fee: MoneyOut
-    total: MoneyOut
+    totals: list["OrderTotalOut"]
     timeline: list[TimelineStepOut]
     cancel_reason: str | None
     can_cancel: bool
@@ -129,6 +137,7 @@ class AdminOrderDetailOut(OrderDetailOut):
     customer: OrderCustomer
     history: list[HistoryOut]
     allowed_next_statuses: list[OrderStatus]
+    map_url: str | None
 
 
 class TopProduct(BaseModel):
@@ -137,12 +146,26 @@ class TopProduct(BaseModel):
     quantity: int
 
 
+class OrderTotalOut(BaseModel):
+    currency: str
+    subtotal: MoneyOut
+    discount: MoneyOut
+    shipping_fee: MoneyOut
+    total: MoneyOut
+    is_legacy: bool
+
+
+class CurrencyStat(BaseModel):
+    currency: str
+    amount: MoneyOut
+
+
 class OrderStats(BaseModel):
     date_from: date | None
     date_to: date | None
     orders_count: int
     counts: dict[str, int]
-    delivered_revenue: MoneyOut
-    average_order_value: MoneyOut
+    delivered_revenue: list[CurrencyStat]
+    average_order_value: list[CurrencyStat]
     cancelled_rate: float
     top_products: list[TopProduct]

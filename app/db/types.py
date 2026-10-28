@@ -2,11 +2,11 @@ from enum import StrEnum
 
 from sqlalchemy import JSON, Enum, Numeric, text
 
-# Money is always DECIMAL(10,2); never Float.
-Money = Numeric(10, 2)
+# Money is always DECIMAL(15,2); never Float.
+Money = Numeric(15, 2)
 
-# Use for every money column defaulting to zero: MySQL reflects DECIMAL(10,2) defaults as '0.00'.
-MONEY_ZERO_DEFAULT = text("0.00")
+# Use for every money column defaulting to zero: MySQL reflects the default as '0.00'.
+MONEY_ZERO_DEFAULT = text("'0.00'")
 
 # Use for every nullable JSON column: Python None is stored as SQL NULL, not the JSON value null.
 NullableJSON = JSON(none_as_null=True)

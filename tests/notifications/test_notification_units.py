@@ -78,14 +78,14 @@ def test_texts_are_clipped_to_column_sizes() -> None:
 @pytest.mark.parametrize(
     ("utc", "expected"),
     [
-        ("2026-07-01 18:59", None),  # 20:59 Berlin (summer, UTC+2)
-        ("2026-07-01 19:00", "2026-07-02 07:00"),  # 21:00 -> 09:00 next day
-        ("2026-07-01 23:30", "2026-07-02 07:00"),  # after midnight UTC, still the same night
-        ("2026-07-02 06:59", "2026-07-02 07:00"),
-        ("2026-07-02 07:00", None),  # 09:00 exactly: allowed
-        ("2026-01-15 20:30", "2026-01-16 08:00"),  # winter, UTC+1
-        ("2026-10-24 21:00", "2026-10-25 08:00"),  # the night summer time ends
-        ("2026-03-28 21:00", "2026-03-29 07:00"),  # the night summer time starts
+        ("2026-07-01 17:59", None),  # 20:59 Damascus (UTC+3)
+        ("2026-07-01 18:00", "2026-07-02 06:00"),  # 21:00 -> 09:00 next day
+        ("2026-07-01 23:30", "2026-07-02 06:00"),
+        ("2026-07-02 05:59", "2026-07-02 06:00"),
+        ("2026-07-02 06:00", None),  # 09:00 exactly: allowed
+        ("2026-01-15 20:30", "2026-01-16 06:00"),
+        ("2026-10-24 21:00", "2026-10-25 06:00"),
+        ("2026-03-28 21:00", "2026-03-29 06:00"),
     ],
 )
 def test_quiet_hours_deferral(utc: str, expected: str | None) -> None:
@@ -97,7 +97,7 @@ def test_only_some_types_respect_quiet_hours() -> None:
     night = datetime.fromisoformat("2026-07-01 22:00")
     for type_ in (NotificationType.marketing, NotificationType.favorite_back_in_stock,
                   NotificationType.favorite_price_drop, NotificationType.cart_reminder):
-        assert effective_schedule(type_, night, S) == (datetime.fromisoformat("2026-07-02 07:00"), True)
+        assert effective_schedule(type_, night, S) == (datetime.fromisoformat("2026-07-02 06:00"), True)
     for type_ in (NotificationType.order_update, NotificationType.admin_alert, NotificationType.message):
         assert effective_schedule(type_, night, S) == (night, False)
 
@@ -108,7 +108,7 @@ def test_quiet_hours_settings_from_store_values() -> None:
     assert (custom.timezone, custom.quiet_hours_start, custom.quiet_hours_end) == ("Europe/Vienna", time(22, 30), time(7, 15))
     assert custom.price_drop_min_percent == 10
     broken = notification_settings_from({"timezone": '"Mars/Base"', "quiet_hours_start": '"25:99"', "cart_reminder_after_hours": "0"})
-    assert (broken.timezone, broken.quiet_hours_start, broken.cart_reminder_after_hours) == ("Europe/Berlin", time(21, 0), 24)
+    assert (broken.timezone, broken.quiet_hours_start, broken.cart_reminder_after_hours) == ("Asia/Damascus", time(21, 0), 24)
     # start == end: no quiet hours at all
     assert deferred_until(datetime(2026, 7, 1, 22), NotificationSettings(quiet_hours_start=time(9), quiet_hours_end=time(9))) is None
 

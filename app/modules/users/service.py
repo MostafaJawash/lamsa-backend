@@ -1,6 +1,7 @@
 """Profile, phone change, account deletion, addresses and devices. One transaction per call."""
 
 import logging
+from decimal import Decimal
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,7 +100,21 @@ class AddressService:
     async def list(self, user: User) -> list[UserAddress]:
         return await users_repo.list_addresses(self.session, user.id)
 
+    @staticmethod
+    def _validate_location(latitude: Decimal | None, longitude: Decimal | None) -> None:
+        if (latitude is None) != (longitude is None):
+            raise ValidationFailed(ErrorCode.INVALID_LOCATION)
+        if latitude is None or longitude is None:
+            return
+        if not (Decimal("32.3") <= latitude <= Decimal("37.4")) or not (
+            Decimal("35.6") <= longitude <= Decimal("42.4")
+        ):
+            raise ValidationFailed(ErrorCode.INVALID_LOCATION)
+        if latitude.as_tuple().exponent < -6 or longitude.as_tuple().exponent < -6:
+            raise ValidationFailed(ErrorCode.INVALID_LOCATION)
+
     async def create(self, user: User, data: AddressCreate) -> UserAddress:
+        self._validate_location(data.latitude, data.longitude)
         await self._lock_user(user)
         count = await users_repo.count_addresses(self.session, user.id)
         if count >= MAX_ADDRESSES:
@@ -122,9 +137,14 @@ class AddressService:
         address = await self._get(user, address_id)
         changes = data.model_dump(exclude_unset=True)
         make_default = changes.pop("is_default", None) is True
-        for field in ("city", "street"):
+        for field in ("governorate", "details"):
             if field in changes and changes[field] is None:
                 changes.pop(field)  # required columns: null means "leave as is"
+        coordinate_fields = {"latitude", "longitude"}
+        if changes.keys() & coordinate_fields:
+            latitude = changes.get("latitude", address.latitude)
+            longitude = changes.get("longitude", address.longitude)
+            self._validate_location(latitude, longitude)
         for field, value in changes.items():
             setattr(address, field, value)
         if make_default and not address.is_default:

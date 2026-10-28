@@ -13,6 +13,7 @@ from app.modules.orders.schemas import (
     OrderCreate,
     OrderDetailOut,
     OrderSort,
+    OrderStatusGroup,
     OrderStats,
     OrderSummaryOut,
     StatusChange,
@@ -56,9 +57,14 @@ async def place_order(
 
 
 @router.get("", response_model=Page[OrderSummaryOut])
-async def list_orders(service: Service, params: PageParamsDep, status_filter: Annotated[OrderStatus | None, Query(alias="status")] = None) -> Page[OrderSummaryOut]:
+async def list_orders(
+    service: Service,
+    params: PageParamsDep,
+    status_filter: Annotated[OrderStatus | None, Query(alias="status")] = None,
+    status_group: Annotated[OrderStatusGroup | None, Query()] = None,
+) -> Page[OrderSummaryOut]:
     """The customer's orders, newest first."""
-    return await service.list(params, status_filter)
+    return await service.list(params, status_filter, status_group)
 
 
 @router.get("/{order_id}", response_model=OrderDetailOut)

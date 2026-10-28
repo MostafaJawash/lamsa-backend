@@ -26,6 +26,62 @@ from catalog_helpers import (
 pytestmark = pytest.mark.anyio
 
 
+async def test_price_sort_filter_and_facets_are_currency_aware(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    category = await create_category(client, admin_headers, "Currency catalog", slug="currency-catalog")
+    for name, currency, price in (
+        ("SYP low", "SYP", "100.00"),
+        ("SYP high", "SYP", "200.00"),
+        ("USD low", "USD", "1.00"),
+        ("USD high", "USD", "99.00"),
+    ):
+        await published_product(
+            client,
+            admin_headers,
+            name=name,
+            category_id=category["id"],
+            currency=currency,
+            price=price,
+        )
+
+    async def names(sort: str) -> list[str]:
+        response = ok(
+            await client.get(
+                f"{PUBLIC}/products", params={"category": "currency-catalog", "sort": sort}
+            )
+        )
+        return [item["name"] for item in response["items"]]
+
+    assert await names("price_asc") == ["SYP low", "SYP high", "USD low", "USD high"]
+    assert await names("price_desc") == ["SYP high", "SYP low", "USD high", "USD low"]
+
+    filtered = ok(
+        await client.get(
+            f"{PUBLIC}/products",
+            params={
+                "category": "currency-catalog",
+                "price_currency": "USD",
+                "min_price": "2.00",
+            },
+        )
+    )
+    assert [item["name"] for item in filtered["items"]] == ["USD high"]
+    facets = ok(
+        await client.get(f"{PUBLIC}/products/facets", params={"category": "currency-catalog"})
+    )
+    assert facets["prices"] == [
+        {"currency": "SYP", "min": "100.00", "max": "200.00"},
+        {"currency": "USD", "min": "1.00", "max": "99.00"},
+    ]
+
+    unsupported = await client.get(
+        f"{PUBLIC}/products", params={"price_currency": "EUR", "min_price": "1"}
+    )
+    assert unsupported.status_code == 422
+    assert code_of(unsupported) == "UNSUPPORTED_CURRENCY"
+
+
 @pytest.fixture(autouse=True)
 async def show_out_of_stock(db_session: AsyncSession) -> None:
     """These tests cover filters, facets and cards WITH out-of-stock products, so browsing shows
@@ -330,7 +386,7 @@ async def test_facets_counts_and_self_exclusion(client: AsyncClient, catalog: di
     facets = ok(await client.get(f"{PUBLIC}/products/facets", params={"category": "beauty"}))
     # Ordered by sort_order, then name.
     assert facets["brands"] == [{"slug": "bella", "name": "Bella", "count": 1}, {"slug": "luma", "name": "Luma", "count": 2}]
-    assert facets["price"] == {"min": "9.00", "max": "15.00"}
+    assert facets["prices"] == [{"currency": "SYP", "min": "9.00", "max": "15.00"}]
     by_key = {a["key"]: a for a in facets["attributes"]}
     assert set(by_key) == {"finish", "skin", "spf", "vegan"}  # text attribute is not a facet
     assert by_key["finish"]["values"] == [{"value": "مطفي", "count": 1, "hex": None}, {"value": "لامع", "count": 1, "hex": None}, {"value": "ساتان", "count": 1, "hex": None}]
@@ -345,7 +401,7 @@ async def test_facets_counts_and_self_exclusion(client: AsyncClient, catalog: di
     assert [b["slug"] for b in narrowed["brands"]] == ["bella", "luma"]
     narrowed_finish = next(a for a in narrowed["attributes"] if a["key"] == "finish")
     assert narrowed_finish["values"] == [{"value": "لامع", "count": 1, "hex": None}]
-    assert narrowed["price"] == {"min": "15.00", "max": "15.00"}
+    assert narrowed["prices"] == [{"currency": "SYP", "min": "15.00", "max": "15.00"}]
     assert narrowed["options"][0]["values"] == []
 
     # Choosing a finish keeps all finishes (own filter ignored); selected values stay listed.
@@ -354,7 +410,9 @@ async def test_facets_counts_and_self_exclusion(client: AsyncClient, catalog: di
     assert {v["value"] for v in finish["values"]} == {"مطفي", "لامع", "ساتان"}
     assert [b["count"] for b in by_finish["brands"]] == [1]
     by_price = ok(await client.get(f"{PUBLIC}/products/facets", params={"category": "beauty", "max_price": "9"}))
-    assert by_price["price"] == {"min": "9.00", "max": "15.00"}  # price facet ignores the price filter
+    assert by_price["prices"] == [
+        {"currency": "SYP", "min": "9.00", "max": "15.00"}
+    ]  # price facet ignores the price filter
     by_color = ok(await client.get(f"{PUBLIC}/products/facets", params={"category": "beauty", "opt.color": "وردي"}))
     assert {v["value"] for v in by_color["options"][0]["values"]} == {"أحمر", "وردي"}
     assert by_color["brands"] == [{"slug": "luma", "name": "Luma", "count": 1}]
@@ -363,4 +421,5 @@ async def test_facets_counts_and_self_exclusion(client: AsyncClient, catalog: di
 async def test_facets_without_category(client: AsyncClient, catalog: dict[str, Any]) -> None:
     facets = ok(await client.get(f"{PUBLIC}/products/facets"))
     assert facets["attributes"] == [] and facets["options"] == []
-    assert facets["price"] == {"min": "5.00", "max": "15.00"} and len(facets["brands"]) == 2
+    assert facets["prices"] == [{"currency": "SYP", "min": "5.00", "max": "15.00"}]
+    assert len(facets["brands"]) == 2

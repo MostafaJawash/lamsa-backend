@@ -19,6 +19,7 @@ from app.modules.products.visibility import visible_product_condition
 from app.core.local_cache import local_cache
 from app.modules.settings.service import StoreLimits, limit_columns, limits_from_row
 from app.modules.users.models import User
+from app.shared.enums import Currency
 
 
 async def lock_user(session: AsyncSession, user_id: int) -> StoreLimits:
@@ -72,6 +73,7 @@ class LineRow:
     slug: str
     name: str
     type: ProductType
+    currency: Currency
     price: Decimal | None
     sale_price: Decimal | None
     stock: int | None
@@ -89,7 +91,8 @@ class LineRow:
 
 
 LINE_COLUMNS = (
-    Product.id.label("product_id"), Product.slug, Product.name, Product.type, Product.price, Product.sale_price,
+    Product.id.label("product_id"), Product.slug, Product.name, Product.type, Product.currency,
+    Product.price, Product.sale_price,
     Product.stock, visible_product_condition().label("visible"), Brand.name.label("brand_name"),
     Brand.slug.label("brand_slug"), ProductVariant.id.label("variant_id"), ProductVariant.options,
     ProductVariant.price.label("variant_price"), ProductVariant.sale_price.label("variant_sale_price"),
@@ -102,6 +105,7 @@ def line_row(r: Any, line_id: int, quantity: int, *, without_variant: bool = Fal
     variant = not without_variant
     return LineRow(
         id=line_id, quantity=quantity, product_id=r.product_id, slug=r.slug, name=r.name, type=r.type,
+        currency=r.currency,
         price=r.price, sale_price=r.sale_price, stock=r.stock, visible=bool(r.visible), brand_name=r.brand_name,
         brand_slug=r.brand_slug, variant_id=r.variant_id if variant else None,
         variant_options=r.options if variant else None, variant_price=r.variant_price if variant else None,

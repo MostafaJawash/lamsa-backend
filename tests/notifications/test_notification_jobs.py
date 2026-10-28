@@ -14,7 +14,7 @@ from app.core.config import settings
 from app.db.session import CONNECT_ARGS
 from app.modules.notifications import jobs
 from app.modules.notifications.models import Notification, UserAlertLog
-from app.modules.orders.models import Order
+from app.modules.orders.models import Order, OrderTotal
 from app.modules.products.models import Product
 from app.modules.users.models import User
 from app.workers.runner import Job, Worker
@@ -26,7 +26,7 @@ from order_helpers import order_from_cart
 
 pytestmark = pytest.mark.anyio
 
-NOON = datetime(2026, 7, 1, 10, 0)  # 12:00 in Berlin
+NOON = datetime(2026, 7, 1, 9, 0)  # 12:00 in Damascus
 
 
 @pytest.fixture
@@ -143,10 +143,19 @@ async def test_cart_reminder_skips(
     _, first_available = await _shopper(client, 35, lip, cream)
     ok(await client.patch(f"{ADMIN}/products/{lip[0]}", json={"is_active": False}, headers=admin_headers))
     # An order placed after the last cart change: no reminder.
-    await db_session.execute(insert(Order).values(
-        user_id=ordered, customer_name="x", customer_phone="+4915100000000", delivery_method_code="pickup",
-        delivery_method_name="Pickup", payment_method="cod", payment_status="pending", status="pending",
-        subtotal=1, shipping_fee=0, total=1, created_at=NOON + timedelta(hours=1), updated_at=NOON + timedelta(hours=1)))
+    placed = Order(
+        user_id=ordered,
+        customer_name="x",
+        customer_phone="+963933000000",
+        delivery_method_code="damascus_courier",
+        delivery_method_name="توصيل ضمن دمشق",
+        created_at=NOON + timedelta(hours=1),
+        updated_at=NOON + timedelta(hours=1),
+    )
+    placed.totals = [
+        OrderTotal(currency="SYP", subtotal=1, shipping_fee=0, total=1, is_legacy=False)
+    ]
+    db_session.add(placed)
     await db_session.commit()
 
     frozen_clock.advance(hours=24)
@@ -160,17 +169,17 @@ async def test_cart_reminder_skips(
 async def test_cart_reminder_window_and_quiet_hours(
     client: AsyncClient, shop: dict, db_session: AsyncSession, frozen_clock: FakeClock
 ) -> None:
-    frozen_clock.now = datetime(2026, 7, 1, 19, 30)  # 21:30 in Berlin
+    frozen_clock.now = datetime(2026, 7, 1, 18, 30)  # 21:30 in Damascus
     await _shopper(client, 36, shop["simple"]["id"])
     frozen_clock.advance(hours=24 + 72, minutes=1)  # left alone too long
     assert await jobs.cart_reminders() == 0
 
-    frozen_clock.now = datetime(2026, 7, 10, 19, 30)
+    frozen_clock.now = datetime(2026, 7, 10, 18, 30)
     await _shopper(client, 37, shop["simple"]["id"])
-    frozen_clock.advance(hours=24)  # 21:30 Berlin the next day
+    frozen_clock.advance(hours=24)  # 21:30 Damascus the next day
     assert await jobs.cart_reminders() == 1
     (reminder,) = await rows(db_session, Notification.type == "cart_reminder")
-    assert (reminder.status, reminder.scheduled_at) == ("scheduled", datetime(2026, 7, 12, 7, 0))
+    assert (reminder.status, reminder.scheduled_at) == ("scheduled", datetime(2026, 7, 12, 6, 0))
 
 
 async def test_cart_reminders_run_on_one_worker_only(

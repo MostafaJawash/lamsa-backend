@@ -38,7 +38,7 @@ def test_money_accepts(raw: object) -> None:
     assert value == value.quantize(Decimal("0.01"))
 
 
-@pytest.mark.parametrize("raw", ["8.951", "-0.01", "100000000", "NaN", "abc"])
+@pytest.mark.parametrize("raw", ["8.951", "-0.01", "10000000000000", "NaN", "abc"])
 def test_money_rejects(raw: object) -> None:
     with pytest.raises(ValidationError):
         Price(value=raw)  # type: ignore[arg-type]

@@ -103,8 +103,8 @@ PASSWORD = "Secret-pass1"
 
 
 def phone(n: int) -> str:
-    """A valid German mobile number in E.164, distinct per n (0..99)."""
-    return f"+49151234567{n:02d}"
+    """A valid Syrian mobile number in E.164, distinct per n (0..99)."""
+    return f"+9639331234{n:02d}"
 
 
 # ----------------------------------------------------------------------------- fixtures

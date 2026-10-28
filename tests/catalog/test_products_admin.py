@@ -82,7 +82,7 @@ async def test_type_is_immutable_and_new_products_inactive(
 
 async def test_money_and_sale_price_rules(client: AsyncClient, admin_headers: dict[str, str], shop: dict[str, int]) -> None:
     cid = shop["category"]
-    for bad in ("1.234", "-1", "100000000.00", "abc"):
+    for bad in ("1.234", "-1", "10000000000000.00", "abc"):
         response = await post(client, admin_headers, {"type": "simple", "name": "X", "category_id": cid, "price": bad, "stock": 1})
         assert response.status_code == 422, bad
     for sale in ("10.00", "12.00"):
@@ -98,6 +98,33 @@ async def test_money_and_sale_price_rules(client: AsyncClient, admin_headers: di
         "variants": [variant("أحمر", price="5", sale_price="5")],
     })
     assert code_of(bad_variant) == "VALIDATION_ERROR"
+
+
+async def test_bundle_rejects_components_in_another_currency(
+    client: AsyncClient, admin_headers: dict[str, str], shop: dict[str, int]
+) -> None:
+    component = await create_product(
+        client,
+        admin_headers,
+        name="USD component",
+        category_id=shop["category"],
+        currency="USD",
+        price="13.00",
+    )
+    response = await client.post(
+        f"{ADMIN}/products",
+        json={
+            "type": "bundle",
+            "name": "SYP bundle",
+            "category_id": shop["category"],
+            "currency": "SYP",
+            "price": "150000.00",
+            "bundle_items": [{"product_id": component["id"], "quantity": 1}],
+        },
+        headers=admin_headers,
+    )
+    assert response.status_code == 422
+    assert code_of(response) == "BUNDLE_CURRENCY_MISMATCH"
 
 
 # ----------------------------------------------------------------------- attributes
@@ -249,11 +276,11 @@ async def test_delete_variant_and_product_guards(
 
     user_id = (await client.get("/api/v1/users/me", headers=admin_headers)).json()["id"]
     order = Order(user_id=user_id, customer_name="A", customer_phone="+4915100000000", delivery_method_code="home",
-                  delivery_method_name="x", subtotal=Decimal("10"), shipping_fee=Decimal("0"), total=Decimal("10"))
+                  delivery_method_name="x")
     db_session.add(order)
     await db_session.flush()
     db_session.add(OrderItem(order_id=order.id, product_id=var["id"], variant_id=red["id"], product_name="V",
-                             unit_price=Decimal("10"), quantity=1, line_total=Decimal("10")))
+                             currency="SYP", unit_price=Decimal("10"), quantity=1, line_total=Decimal("10")))
     await db_session.commit()
 
     has_orders = await client.delete(f"{ADMIN}/products/{var['id']}/variants/{red['id']}", headers=admin_headers)

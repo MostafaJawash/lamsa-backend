@@ -84,7 +84,8 @@ async def test_preview_unknown_hidden_and_wrong_variants_are_unavailable_lines(
     unknown = data["lines"][0]
     assert unknown["product"]["id"] == 999999 and unknown["product"]["name"] == "" and unknown["line_total"] == "0.00"
     assert data["lines"][1]["product"]["name"] == "Draft"
-    assert (data["items_count"], data["lines_count"], data["issues_count"], data["subtotal"]) == (1, 7, 6, "8.00")
+    assert (data["items_count"], data["lines_count"], data["issues_count"]) == (1, 7, 6)
+    assert data["subtotals"] == [{"currency": "SYP", "amount": "8.00"}]
 
 
 async def test_preview_quantity_issues_and_duplicates(

@@ -53,7 +53,7 @@ async def test_every_issue_type_and_resolve(
     assert issue_of(data, shop["bundle"]["id"])["code"] == "UNAVAILABLE"
     assert all(l["issue"]["message"] for l in data["lines"])
     assert data["lines_count"] == 5 and data["issues_count"] == 5 and data["can_checkout"] is False
-    assert (data["items_count"], data["subtotal"]) == (0, "0.00")
+    assert data["items_count"] == 0 and data["subtotals"] == []
     assert all(l["line_total"] == "0.00" for l in data["lines"])
     assert data["notices"] == []  # plain read: nothing changed, nothing deleted
     assert (await cart(client, customer_headers))["lines_count"] == 5

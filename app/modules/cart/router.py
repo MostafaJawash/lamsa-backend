@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from app.modules.cart.schemas import (
     CartCountOut,
@@ -26,10 +26,14 @@ Service = Annotated[CartService, Depends(get_service)]
 
 
 @router.get("", response_model=CartOut)
-async def get_cart(service: Service) -> CartOut:
+async def get_cart(
+    service: Service,
+    governorate: Annotated[str | None, Query(max_length=32)] = None,
+    delivery_method_code: Annotated[str | None, Query(max_length=30)] = None,
+) -> CartOut:
     """The cart with live prices, stock status, line issues and delivery quotes.
     The cart does not reserve stock; stock is taken only when an order is placed."""
-    return await service.get()
+    return await service.get(governorate, delivery_method_code)
 
 
 @router.get("/count", response_model=CartCountOut)
@@ -44,7 +48,9 @@ async def preview_cart(data: CartPreview, session: DbSession) -> CartPreviewOut:
     computed exactly like GET /cart without storing anything. Lines carry a `key`
     ("<product_id>:<variant_id or 0>") instead of an id; unknown or hidden products come back as
     UNAVAILABLE lines; the same product and variant twice become one line (notice LINES_MERGED)."""
-    return await CartPreviewService(session).preview(data.items)
+    return await CartPreviewService(session).preview(
+        data.items, data.governorate, data.delivery_method_code
+    )
 
 
 @router.post("/items", response_model=CartOut, status_code=status.HTTP_201_CREATED)

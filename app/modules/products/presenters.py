@@ -21,6 +21,7 @@ from app.modules.products.schemas import (
 from app.modules.products.summary import VariantRow, pick_variant_for_price
 from app.shared.money import discount_percent
 from app.shared.schemas import image_urls
+from app.shared.enums import Currency
 
 MAX_SWATCHES = 8
 LIST_SEPARATOR = "، "
@@ -118,6 +119,7 @@ class CardRow:
     slug: str
     name: str
     type: ProductType
+    currency: Currency
     price: Decimal | None
     sale_price: Decimal | None
     price_from: Decimal
@@ -133,7 +135,8 @@ def build_card(
 ) -> ProductCardOut:
     compare = compare_at(row.type, row.price, row.sale_price, variants)
     return ProductCardOut(
-        id=row.id, slug=row.slug, name=row.name, type=row.type, brand=row.brand, category=row.category,
+        id=row.id, slug=row.slug, name=row.name, type=row.type, currency=row.currency,
+        brand=row.brand, category=row.category,
         image=image_urls(image_key), price=row.price_from, compare_at_price=compare,
         discount_percent=discount_percent(compare, row.price_from) if compare is not None else None,
         is_new=row.is_new, is_on_sale=row.is_on_sale, in_stock=row.in_stock,

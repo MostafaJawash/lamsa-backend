@@ -6,10 +6,10 @@ MAX_RAW_PHONE_LENGTH = 32
 
 
 def normalize_phone(raw: str, region: str | None = None) -> str:
-    """Return the phone number in E.164 (e.g. +4915123456789) or raise INVALID_PHONE.
+    """Return the phone number in E.164 (e.g. +963933123456) or raise INVALID_PHONE.
 
-    Accepts local formats for the default region (e.g. 0151 2345 6789 in DE) and international
-    formats (+49..., 0049...).
+    Accepts local formats for the default region (e.g. 0933 123 456 in SY) and international
+    formats (+49..., 00961...).
     """
     if region is None:
         from app.core.config import settings

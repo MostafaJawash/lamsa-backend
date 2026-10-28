@@ -102,7 +102,8 @@ async def test_browsing_endpoints_follow_the_setting(
     # Facets: counted on in-stock products only (Cream is Cart Brand's, 8.00 the lowest price).
     facets = ok(await client.get(f"{PUBLIC}/products/facets", params={"category": "cart-shop"}))
     assert {b["slug"]: b["count"] for b in facets["brands"]} == {"cart-brand": 1 if hide else 2}
-    assert (facets["price"]["min"] == "8.00") is not hide
+    syp_price = next((row for row in facets["prices"] if row["currency"] == "SYP"), None)
+    assert (syp_price is not None and syp_price["min"] == "8.00") is not hide
     assert {b["slug"]: b["count"] for b in ok(await client.get(f"{PUBLIC}/products/facets"))["brands"]} == {
         "cart-brand": 1 if hide else 2
     }

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Numeric, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.db.base import Base
+from app.db.base import Base, table_args
 from app.db.mixins import CURRENT_TIMESTAMP, CreatedAtMixin, IdMixin, TimestampMixin
 from app.db.types import str_enum
 from app.modules.users.enums import AuthProvider, DevicePlatform, UserRole
@@ -41,7 +42,7 @@ class User(IdMixin, TimestampMixin, Base):
         Boolean, default=False, server_default=text("0")
     )
     name: Mapped[str] = mapped_column(String(100))
-    phone: Mapped[str] = mapped_column(String(20), unique=True)  # E.164, e.g. +4915123456789
+    phone: Mapped[str] = mapped_column(String(20), unique=True)  # E.164, e.g. +963933123456
     email: Mapped[str | None] = mapped_column(String(255))
     auth_provider: Mapped[AuthProvider] = mapped_column(str_enum(AuthProvider))
     role: Mapped[UserRole] = mapped_column(
@@ -79,12 +80,30 @@ class User(IdMixin, TimestampMixin, Base):
 
 class UserAddress(IdMixin, TimestampMixin, Base):
     __tablename__ = "user_addresses"
+    __table_args__ = table_args(
+        CheckConstraint(
+            "governorate IN ('damascus', 'rif_dimashq', 'aleppo', 'homs', 'hama', "
+            "'latakia', 'tartus', 'idlib', 'deir_ez_zor', 'raqqa', 'hasakah', "
+            "'daraa', 'as_suwayda', 'quneitra')",
+            name="governorate_supported",
+        ),
+        CheckConstraint(
+            "((latitude IS NULL AND longitude IS NULL) OR "
+            "(latitude IS NOT NULL AND longitude IS NOT NULL AND "
+            "latitude BETWEEN 32.300000 AND 37.400000 AND "
+            "longitude BETWEEN 35.600000 AND 42.400000))",
+            name="location_in_syria",
+        ),
+        CheckConstraint("CHAR_LENGTH(details) BETWEEN 10 AND 500", name="details_length"),
+    )
 
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), index=True)
     label: Mapped[str | None] = mapped_column(String(50))  # "البيت", "الشغل"
-    city: Mapped[str] = mapped_column(String(100))
-    street: Mapped[str] = mapped_column(String(255))
-    building: Mapped[str | None] = mapped_column(String(100))
+    governorate: Mapped[str] = mapped_column(String(32))
+    area: Mapped[str | None] = mapped_column(String(100))
+    details: Mapped[str] = mapped_column(String(500))
+    latitude: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
+    longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
     notes: Mapped[str | None] = mapped_column(String(500))
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"))
 

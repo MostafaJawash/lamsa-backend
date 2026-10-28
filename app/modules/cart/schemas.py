@@ -7,6 +7,7 @@ from app.modules.products.schemas import StockStatus
 from app.shared.exceptions import CartIssue, CartNotice
 from app.shared.money import MoneyOut
 from app.shared.schemas import ImageUrls
+from app.shared.enums import Currency
 
 # ---------------------------------------------------------------------------- requests
 
@@ -46,6 +47,8 @@ class CartPreviewItem(BaseModel):
 
 class CartPreview(BaseModel):
     items: list[CartPreviewItem] = Field(max_length=50)
+    governorate: str | None = Field(default=None, max_length=32)
+    delivery_method_code: str | None = Field(default=None, max_length=30)
 
 
 # --------------------------------------------------------------------------- responses
@@ -90,6 +93,7 @@ class CartLineFields(BaseModel):
     product: CartProduct
     variant: CartVariant | None
     image: ImageUrls | None
+    currency: Currency
     unit_price: MoneyOut
     regular_price: MoneyOut
     compare_at_price: MoneyOut | None
@@ -113,11 +117,19 @@ class DeliveryQuote(BaseModel):
     code: str
     name: str
     description: str | None
+    currency: Currency
     fee: MoneyOut
     is_free: bool
     free_from: MoneyOut | None
     amount_to_free_shipping: MoneyOut | None
     requires_address: bool
+    fee_paid_to_carrier: bool
+    totals: list["CurrencyAmount"]
+
+
+class CurrencyAmount(BaseModel):
+    currency: Currency
+    amount: MoneyOut
 
 
 class CartNoticeOut(BaseModel):
@@ -134,8 +146,11 @@ class CartOut(BaseModel):
     lines: list[CartLineOut]
     items_count: int = Field(description="Sum of quantities of lines without issues")
     lines_count: int
-    subtotal: MoneyOut = Field(description="Lines without issues only")
-    savings: MoneyOut
+    subtotals: list[CurrencyAmount] = Field(description="Lines without issues only")
+    savings: list[CurrencyAmount]
+    delivery_fees: list[CurrencyAmount] = []
+    totals: list[CurrencyAmount]
+    selected_delivery_method_code: str | None = None
     delivery_quotes: list[DeliveryQuote]
     can_checkout: bool
     issues_count: int

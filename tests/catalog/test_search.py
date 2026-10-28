@@ -156,7 +156,7 @@ async def test_relevance_is_default_with_q(committed: Any, products: dict[str, A
     assert await search(client, "ارغان") == ["زيت أرغان للشعر", "شامبو"]
     assert await search(client, "ارغان", sort="newest") == ["شامبو", "زيت أرغان للشعر"]
     facets = ok(await client.get(f"{PUBLIC}/products/facets", params={"q": "ارغان"}))
-    assert facets["price"]["min"] is not None
+    assert facets["prices"][0]["min"] is not None
 
 
 async def test_admin_search_by_text_and_sku(committed: Any, products: dict[str, Any]) -> None:

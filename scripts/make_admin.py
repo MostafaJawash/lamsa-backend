@@ -1,6 +1,6 @@
 """Give an existing user the admin role.
 
-Run with:  python -m scripts.make_admin --phone 0151 23456789
+Run with:  python -m scripts.make_admin --phone 0933 123 456
 """
 
 import argparse

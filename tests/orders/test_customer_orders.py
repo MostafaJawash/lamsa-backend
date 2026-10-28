@@ -33,8 +33,12 @@ async def test_list_detail_and_foreign_order(client: AsyncClient, customer_heade
     page = ok(await client.get(ORDERS, headers=customer_headers))
     assert [o["id"] for o in page["items"]] == [second["id"], first["id"]] and page["total"] == 2
     row = page["items"][0]
-    assert (row["status"], row["status_label"], row["items_count"], row["total"], row["delivery_method_name"]) == (
-        "pending", "تم استلام طلبك", 2, "24.00", "الاستلام من المتجر")
+    assert (row["status"], row["status_label"], row["items_count"], row["delivery_method_name"]) == (
+        "pending", "تم استلام طلبك", 2, "التوصيل داخل دمشق")
+    assert row["totals"] == [{
+        "currency": "SYP", "subtotal": "24.00", "discount": "0.00",
+        "shipping_fee": "15000.00", "total": "15024.00", "is_legacy": False,
+    }]
     assert row["image"] == shop["color_images"]["lip_red"]["urls"]
     paged = ok(await client.get(ORDERS, params={"page_size": 1, "page": 2}, headers=customer_headers))
     assert [o["id"] for o in paged["items"]] == [first["id"]] and paged["total"] == 2
@@ -46,6 +50,34 @@ async def test_list_detail_and_foreign_order(client: AsyncClient, customer_heade
     foreign = await client.get(f"{ORDERS}/{first['id']}", headers=other)
     assert foreign.status_code == 404 and code_of(foreign) == "ORDER_NOT_FOUND"
     assert (await client.post(f"{ORDERS}/{first['id']}/cancel", headers=other)).status_code == 404
+
+
+async def test_customer_order_status_groups(
+    client: AsyncClient,
+    admin_headers: dict[str, str],
+    customer_headers: dict[str, str],
+    shop: dict,
+) -> None:
+    active = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)])
+    completed = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)])
+    cancelled = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)])
+    for status in ("preparing", "shipped", "delivered"):
+        ok(
+            await client.post(
+                f"{ADMIN_ORDERS}/{completed['id']}/status",
+                json={"to_status": status},
+                headers=admin_headers,
+            )
+        )
+    ok(await client.post(f"{ORDERS}/{cancelled['id']}/cancel", headers=customer_headers))
+
+    async def group(value: str) -> list[int]:
+        page = ok(await client.get(ORDERS, params={"status_group": value}, headers=customer_headers))
+        return [item["id"] for item in page["items"]]
+
+    assert await group("active") == [active["id"]]
+    assert await group("completed") == [completed["id"]]
+    assert await group("cancelled") == [cancelled["id"]]
 
 
 async def test_cancel_restores_stock_including_bundles(

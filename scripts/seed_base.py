@@ -102,41 +102,44 @@ CATEGORIES: list[dict[str, Any]] = [
 
 DELIVERY_METHODS: list[dict[str, Any]] = [
     {
-        "code": "home",
-        "name": "التوصيل إلى المنزل",
-        "description": "خلال ٢ إلى ٣ أيام عمل",
-        "fee": Decimal("4.95"),
-        "free_from": Decimal("49.00"),
-        "requires_address": True,
-    },
-    {
-        "code": "express",
-        "name": "التوصيل السريع",
-        "description": "في اليوم نفسه عند الطلب قبل الساعة ٦",
-        "fee": Decimal("7.95"),
+        "code": "damascus_courier",
+        "name": "التوصيل داخل دمشق",
+        "description": "رسم تجريبي — يجب على الإدارة ضبطه قبل الإطلاق",
+        "fee": Decimal("15000.00"),
         "free_from": None,
+        "currency": "SYP",
+        "allowed_governorates": ["damascus"],
+        "fee_paid_to_carrier": False,
         "requires_address": True,
     },
     {
-        "code": "pickup",
-        "name": "الاستلام من المتجر",
-        "description": "جاهز خلال ساعتين",
+        "code": "province_shipping",
+        "name": "الشحن إلى المحافظات",
+        "description": "تُدفع أجرة الشحن لشركة الشحن عند الاستلام",
         "fee": Decimal("0.00"),
         "free_from": None,
-        "requires_address": False,
+        "currency": "SYP",
+        "allowed_governorates": [
+            "rif_dimashq", "aleppo", "homs", "hama", "latakia", "tartus", "idlib",
+            "deir_ez_zor", "raqqa", "hasakah", "daraa", "as_suwayda", "quneitra",
+        ],
+        "fee_paid_to_carrier": True,
+        "requires_address": True,
     },
 ]
 
+LEGACY_DELIVERY_CODES = ("home", "express", "pickup")
+
 STORE_SETTINGS: dict[str, Any] = {
     "store_name": "لمسة",
-    "currency": "EUR",
+    "currency": "SYP",
     "support_phone": None,
     "low_stock_threshold": 3,
     "cart_max_quantity_per_line": 10,
     "cart_max_lines": 50,
     "favorites_max": 200,
     "catalog_hide_out_of_stock": True,
-    "timezone": "Europe/Berlin",
+    "timezone": "Asia/Damascus",
     "quiet_hours_start": "21:00",
     "quiet_hours_end": "09:00",
     "favorite_alert_cooldown_days": 7,
@@ -209,12 +212,18 @@ async def seed_categories(session: AsyncSession) -> None:
 
 
 async def seed_delivery_methods(session: AsyncSession) -> None:
+    legacy = await session.scalars(select(DeliveryMethod).where(DeliveryMethod.code.in_(LEGACY_DELIVERY_CODES)))
+    for method in legacy.all():
+        method.is_active = False
     for index, data in enumerate(DELIVERY_METHODS):
         method = await session.scalar(select(DeliveryMethod).where(DeliveryMethod.code == data["code"]))
         if method is None:
             method = DeliveryMethod(code=data["code"])
             session.add(method)
-        _apply(method, {**{k: v for k, v in data.items() if k != "code"}, "sort_order": index})
+            _apply(
+                method,
+                {**{k: v for k, v in data.items() if k != "code"}, "is_active": True, "sort_order": index},
+            )
 
 
 async def seed_settings(session: AsyncSession) -> None:

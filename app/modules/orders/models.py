@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, CHAR, CheckConstraint, ForeignKey, Index, Integer, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, table_args
@@ -28,10 +28,10 @@ class Order(IdMixin, TimestampMixin, Base):
         Index("ix_orders_status_created_at", "status", "created_at"),
         # One order per (user, Idempotency-Key); MySQL allows many NULL keys.
         UniqueConstraint("user_id", "idempotency_key", name="uq_orders_user_id_idempotency_key"),
-        CheckConstraint("subtotal >= 0", name="subtotal_non_negative"),
-        CheckConstraint("discount >= 0", name="discount_non_negative"),
-        CheckConstraint("shipping_fee >= 0", name="shipping_fee_non_negative"),
-        CheckConstraint("total >= 0", name="total_non_negative"),
+        CheckConstraint(
+            "delivery_method_currency IN ('SYP', 'USD', 'EUR')",
+            name="delivery_method_currency_known",
+        ),
         mysql_auto_increment="1001",
     )
 
@@ -39,13 +39,18 @@ class Order(IdMixin, TimestampMixin, Base):
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="RESTRICT"))
     customer_name: Mapped[str] = mapped_column(String(100))
     customer_phone: Mapped[str] = mapped_column(String(20))
-    # {label, city, street, building, notes}; NULL for pickup.
+    # New snapshots use {label, governorate, area, details, latitude, longitude, notes}.
+    # Historical rows may retain {label, city, street, building, notes}; NULL means old pickup.
     shipping_address: Mapped[dict[str, Any] | None] = mapped_column(NullableJSON)
     delivery_method_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("delivery_methods.id", ondelete="SET NULL"), index=True
     )
     delivery_method_code: Mapped[str] = mapped_column(String(30))
     delivery_method_name: Mapped[str] = mapped_column(String(100))
+    delivery_method_currency: Mapped[str] = mapped_column(CHAR(3), default="SYP")
+    delivery_fee_paid_to_carrier: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("0")
+    )
     payment_method: Mapped[PaymentMethod] = mapped_column(
         str_enum(PaymentMethod), default=PaymentMethod.cod, server_default=PaymentMethod.cod.value
     )
@@ -55,10 +60,6 @@ class Order(IdMixin, TimestampMixin, Base):
     status: Mapped[OrderStatus] = mapped_column(
         str_enum(OrderStatus), default=OrderStatus.pending, server_default=OrderStatus.pending.value
     )
-    subtotal: Mapped[Decimal] = mapped_column(Money)
-    discount: Mapped[Decimal] = mapped_column(Money, default=Decimal("0"), server_default=MONEY_ZERO_DEFAULT)
-    shipping_fee: Mapped[Decimal] = mapped_column(Money)
-    total: Mapped[Decimal] = mapped_column(Money)
     customer_notes: Mapped[str | None] = mapped_column(String(500))
     gift_message: Mapped[str | None] = mapped_column(String(500))
     cancel_reason: Mapped[str | None] = mapped_column(String(255))
@@ -67,6 +68,9 @@ class Order(IdMixin, TimestampMixin, Base):
     user: Mapped[User] = relationship(back_populates="orders", lazy="raise")
     delivery_method: Mapped[DeliveryMethod | None] = relationship(lazy="raise")
     items: Mapped[list[OrderItem]] = relationship(
+        back_populates="order", lazy="raise", cascade="all, delete-orphan", passive_deletes=True
+    )
+    totals: Mapped[list[OrderTotal]] = relationship(
         back_populates="order", lazy="raise", cascade="all, delete-orphan", passive_deletes=True
     )
     status_history: Mapped[list[OrderStatusHistory]] = relationship(
@@ -78,12 +82,48 @@ class Order(IdMixin, TimestampMixin, Base):
     )
 
 
+class OrderTotal(Base):
+    """One immutable subtotal/discount/shipping/total bucket per order currency."""
+
+    __tablename__ = "order_totals"
+    __table_args__ = table_args(
+        CheckConstraint("subtotal >= 0", name="subtotal_non_negative"),
+        CheckConstraint("discount >= 0", name="discount_non_negative"),
+        CheckConstraint("shipping_fee >= 0", name="shipping_fee_non_negative"),
+        CheckConstraint("total >= 0", name="total_non_negative"),
+        CheckConstraint("discount <= subtotal", name="discount_not_above_subtotal"),
+        CheckConstraint(
+            "total = subtotal - discount + shipping_fee", name="total_matches_parts"
+        ),
+        CheckConstraint(
+            "(is_legacy = 1 AND currency = 'EUR') OR "
+            "(is_legacy = 0 AND currency IN ('SYP', 'USD'))",
+            name="currency_kind",
+        ),
+    )
+
+    order_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("orders.id", ondelete="CASCADE"), primary_key=True
+    )
+    currency: Mapped[str] = mapped_column(CHAR(3), primary_key=True)
+    subtotal: Mapped[Decimal] = mapped_column(Money)
+    discount: Mapped[Decimal] = mapped_column(
+        Money, default=Decimal("0"), server_default=MONEY_ZERO_DEFAULT
+    )
+    shipping_fee: Mapped[Decimal] = mapped_column(Money)
+    total: Mapped[Decimal] = mapped_column(Money)
+    is_legacy: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"))
+
+    order: Mapped[Order] = relationship(back_populates="totals", lazy="raise")
+
+
 class OrderItem(IdMixin, Base):
     """A snapshot of one ordered line; product/variant links survive only while they exist."""
 
     __tablename__ = "order_items"
     __table_args__ = table_args(
         CheckConstraint("quantity > 0", name="quantity_positive"),
+        CheckConstraint("currency IN ('SYP', 'USD', 'EUR')", name="currency_known"),
     )
 
     order_id: Mapped[int] = mapped_column(
@@ -100,6 +140,7 @@ class OrderItem(IdMixin, Base):
     options: Mapped[dict[str, Any] | None] = mapped_column(NullableJSON)
     sku: Mapped[str | None] = mapped_column(String(64))
     image_key: Mapped[str | None] = mapped_column(String(255))
+    currency: Mapped[str] = mapped_column(CHAR(3), default="SYP")
     unit_price: Mapped[Decimal] = mapped_column(Money)
     quantity: Mapped[int] = mapped_column(Integer)
     line_total: Mapped[Decimal] = mapped_column(Money)

@@ -141,7 +141,7 @@ def validate_password(password: str, phone: str | None = None) -> None:
 
 
 def _matches_phone(password: str, phone: str) -> bool:
-    """True if the password is the phone number in any format (+49 151..., 0151-..., 0049...)."""
+    """True if the password is the phone number in any format (+963 933..., 0933..., 00963...)."""
     from app.shared.utils.phone import normalize_phone
 
     try:

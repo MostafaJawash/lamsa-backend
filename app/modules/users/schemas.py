@@ -1,9 +1,11 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, EmailStr, StringConstraints, field_validator
 
 from app.modules.users.enums import AuthProvider, DevicePlatform, UserRole
+from app.shared.governorates import is_governorate
 
 MAX_EMAIL_LENGTH = 255
 
@@ -65,24 +67,34 @@ class AccountDelete(BaseModel):
 # ----------------------------------------------------------------------------- addresses
 
 AddressLabel = Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)]
-AddressCity = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
-AddressStreet = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
-AddressBuilding = Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]
+AddressGovernorate = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=32)]
+AddressArea = Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]
+AddressDetails = Annotated[str, StringConstraints(strip_whitespace=True, min_length=10, max_length=500)]
 AddressNotes = Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)]
 
 
 class AddressCreate(BaseModel):
     label: AddressLabel | None = None
-    city: AddressCity
-    street: AddressStreet
-    building: AddressBuilding | None = None
+    governorate: AddressGovernorate
+    area: AddressArea | None = None
+    details: AddressDetails
+    latitude: Decimal | None = None
+    longitude: Decimal | None = None
     notes: AddressNotes | None = None
     is_default: bool = False
 
-    @field_validator("label", "building", "notes", mode="after")
+    @field_validator("governorate")
+    @classmethod
+    def _known_governorate(cls, value: str) -> str:
+        if not is_governorate(value):
+            raise ValueError("unsupported governorate")
+        return value
+
+    @field_validator("label", "area", "notes", mode="after")
     @classmethod
     def _optional_blank(cls, value: str | None) -> str | None:
         return _blank_to_none(value)
+
 
 
 class AddressUpdate(BaseModel):
@@ -90,13 +102,22 @@ class AddressUpdate(BaseModel):
     elsewhere set it on another address (the default cannot simply be unset)."""
 
     label: AddressLabel | None = None
-    city: AddressCity | None = None
-    street: AddressStreet | None = None
-    building: AddressBuilding | None = None
+    governorate: AddressGovernorate | None = None
+    area: AddressArea | None = None
+    details: AddressDetails | None = None
+    latitude: Decimal | None = None
+    longitude: Decimal | None = None
     notes: AddressNotes | None = None
     is_default: bool | None = None
 
-    @field_validator("label", "building", "notes", mode="after")
+    @field_validator("governorate")
+    @classmethod
+    def _known_governorate(cls, value: str | None) -> str | None:
+        if value is not None and not is_governorate(value):
+            raise ValueError("unsupported governorate")
+        return value
+
+    @field_validator("label", "area", "notes", mode="after")
     @classmethod
     def _optional_blank(cls, value: str | None) -> str | None:
         return _blank_to_none(value)
@@ -107,9 +128,11 @@ class AddressOut(BaseModel):
 
     id: int
     label: str | None
-    city: str
-    street: str
-    building: str | None
+    governorate: str
+    area: str | None
+    details: str
+    latitude: Decimal | None
+    longitude: Decimal | None
     notes: str | None
     is_default: bool
     created_at: datetime

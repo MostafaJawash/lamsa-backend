@@ -6,8 +6,8 @@
   python -m scripts.seed_load_data --verify-flash 50  # after a run: stock never negative, sold == stock
   python -m scripts.seed_load_data --broadcast-report # duration and counts of the latest campaign
 
-Everything is marked: product/brand slugs "load-...", phones +4915123400000..+4915123409999 and the
-admin +4915123500000. All users share the password LOAD_PASSWORD (one precomputed hash, so seeding
+Everything is marked: product/brand slugs "load-...", phones +963933000000..+963933009999 and the
+admin +963933999999. All users share the password LOAD_PASSWORD (one precomputed hash, so seeding
 takes seconds). Products share 12 placeholder image files. Run `python -m scripts.seed_base` first.
 """
 
@@ -42,8 +42,8 @@ PRODUCTS = 3000
 USERS = 10_000
 BRANDS = 20
 LOAD_PASSWORD = "LoadTest-pass1"
-PHONE_BASE = 4915123400000
-ADMIN_PHONE = "+4915123500000"
+PHONE_PREFIX = "+963933"
+ADMIN_PHONE = "+963933999999"
 FLASH_SLUG = "load-flash-sale"
 CHUNK = 500
 RNG = random.Random(20261023)
@@ -55,7 +55,7 @@ SIZES = ["50 ml", "100 ml", "200 ml"]
 
 
 def phone(i: int) -> str:
-    return f"+{PHONE_BASE + i}"
+    return f"{PHONE_PREFIX}{i:06d}"
 
 
 def refuse_unless_load_database() -> None:
@@ -81,7 +81,7 @@ async def chunked_insert(session: AsyncSession, model: Any, rows: list[dict[str,
 
 
 async def reset(session: AsyncSession) -> None:
-    load_users = select(User.id).where(User.phone.like("+491512340%") | (User.phone == ADMIN_PHONE)).scalar_subquery()
+    load_users = select(User.id).where(User.phone.like(f"{PHONE_PREFIX}%") | (User.phone == ADMIN_PHONE)).scalar_subquery()
     load_products = select(Product.id).where(Product.slug.like("load-%")).scalar_subquery()
     load_orders = select(Order.id).where(Order.user_id.in_(load_users)).scalar_subquery()
     for statement in (
@@ -91,7 +91,7 @@ async def reset(session: AsyncSession) -> None:
         delete(Notification),  # the load database only
         delete(CartItem).where(CartItem.user_id.in_(load_users)),
         delete(Favorite).where(Favorite.user_id.in_(load_users)),
-        delete(User).where(User.phone.like("+491512340%") | (User.phone == ADMIN_PHONE)),
+        delete(User).where(User.phone.like(f"{PHONE_PREFIX}%") | (User.phone == ADMIN_PHONE)),
         delete(BundleItem).where(BundleItem.bundle_product_id.in_(load_products)),
         delete(ProductImage).where(ProductImage.product_id.in_(load_products)),
         delete(ProductVariant).where(ProductVariant.product_id.in_(load_products)),
@@ -147,7 +147,7 @@ async def seed_catalog(session: AsyncSession) -> None:
         on_sale = RNG.random() < 0.25
         row = {
             "name": "عرض فلاش" if i == 0 else f"{RNG.choice(WORDS)} {i}", "slug": slug, "description": "منتج تجريبي لاختبار الحمل.",
-            "category_id": category.id, "brand_id": RNG.choice(brand_ids), "type": kind, "attributes": attrs,
+            "category_id": category.id, "brand_id": RNG.choice(brand_ids), "type": kind, "currency": "SYP", "attributes": attrs,
             "sku": None, "price": None, "sale_price": None, "stock": None, "is_new": RNG.random() < 0.15,
             "is_active": True, "search_text": "", "created_at": now, "updated_at": now,
         }
@@ -207,7 +207,7 @@ async def seed_catalog(session: AsyncSession) -> None:
 
 
 async def seed_users(session: AsyncSession) -> None:
-    existing = await session.scalar(select(func.count()).select_from(User).where(User.phone.like("+491512340%")))
+    existing = await session.scalar(select(func.count()).select_from(User).where(User.phone.like(f"{PHONE_PREFIX}%")))
     if existing:
         print(f"Users: {existing} load users already there, skipped.")
         return
@@ -218,13 +218,14 @@ async def seed_users(session: AsyncSession) -> None:
     users.append({"name": "Load Admin", "phone": ADMIN_PHONE, "auth_provider": "phone", "password_hash": password_hash,
                   "role": "admin", "is_active": True, "created_at": now, "updated_at": now})
     await chunked_insert(session, User, users)
-    user_ids = list((await session.scalars(select(User.id).where(User.phone.like("+491512340%")).order_by(User.phone))).all())
+    user_ids = list((await session.scalars(select(User.id).where(User.phone.like(f"{PHONE_PREFIX}%")).order_by(User.phone))).all())
     await chunked_insert(session, UserDevice, [
         {"user_id": uid, "fcm_token": f"load-fcm-{uid}", "platform": "android" if uid % 3 else "ios", "created_at": now, "last_seen_at": now}
         for uid in user_ids
     ])
     await chunked_insert(session, UserAddress, [
-        {"user_id": uid, "label": "البيت", "city": "Berlin", "street": f"Teststr. {uid % 200}", "is_default": True,
+        {"user_id": uid, "label": "البيت", "governorate": "damascus", "area": "المزة",
+         "details": f"شارع الاختبار، بناء {uid % 200}", "is_default": True,
          "created_at": now, "updated_at": now}
         for uid in user_ids
     ])

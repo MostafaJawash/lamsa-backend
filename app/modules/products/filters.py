@@ -26,6 +26,7 @@ from app.modules.products.visibility import visible_product_condition
 from app.shared.catalog import DEFINITION_KEY_PATTERN, json_path
 from app.shared.exceptions import ErrorCode, ValidationFailed
 from app.shared.money import MAX_MONEY
+from app.shared.enums import Currency
 
 MAX_VALUES_PER_KEY = 20
 MAX_FILTER_VALUE_LENGTH = 100
@@ -65,6 +66,7 @@ class ProductFilters:
     search: str | None = None  # boolean-mode query, already built and safe
     min_price: Decimal | None = None
     max_price: Decimal | None = None
+    price_currency: Currency = Currency.syp
     in_stock: bool = False
     # The store setting catalog_hide_out_of_stock (browsing never shows out-of-stock products).
     hide_out_of_stock: bool = False
@@ -204,7 +206,7 @@ def _number(name: str, value: str) -> Decimal:
         number = Decimal(value)
     except InvalidOperation as exc:
         raise invalid_filter(name, "expected a number") from exc
-    if not number.is_finite() or abs(number) > Decimal("99999999"):
+    if not number.is_finite() or abs(number) > MAX_MONEY:
         raise invalid_filter(name, "expected a number")
     return number
 
@@ -265,6 +267,8 @@ def build_conditions(filters: ProductFilters, *, exclude: str | None = None) -> 
     if filters.brand_slugs and exclude != "brand":
         conditions.append(Product.brand_id.in_(select(Brand.id).where(Brand.slug.in_(filters.brand_slugs))))
     if exclude != "price":
+        if filters.min_price is not None or filters.max_price is not None:
+            conditions.append(Product.currency == filters.price_currency.value)
         if filters.min_price is not None:
             conditions.append(Product.price_from >= filters.min_price)
         if filters.max_price is not None:

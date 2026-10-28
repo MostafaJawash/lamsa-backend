@@ -32,11 +32,13 @@ from app.modules.categories.schemas import CategoryCreate, CategoryUpdate
 from app.modules.categories.service import AdminCategoryService
 from app.modules.products.enums import ProductType
 from app.modules.products.models import Product
-from app.modules.products.schemas import BundleItemIn, ProductCreate, ProductUpdate, VariantIn
+from app.modules.products.schemas import BundleItemIn, ProductCreate, ProductUpdate, VariantIn, VariantUpdate
 from app.modules.products.service import AdminProductService
+from app.shared.enums import Currency
 
 GIFTS_SLUG = "demo-gifts"
 IMAGE_SIZE = 800
+USD_PRODUCTS = frozenset({11, 12, 13})
 
 # ------------------------------------------------------------------------------ data
 
@@ -222,16 +224,26 @@ def _attributes(p: DemoProduct) -> dict[str, Any]:
     return attrs
 
 
+def _currency(number: int) -> Currency:
+    return Currency.usd if number in USD_PRODUCTS else Currency.syp
+
+
+def _money(number: int, value: str) -> Decimal:
+    amount = Decimal(value)
+    return amount if number in USD_PRODUCTS else (amount * Decimal("10000")).quantize(Decimal("0.01"))
+
+
 def _variants(p: DemoProduct) -> list[VariantIn]:
     assert p.variants is not None
     result = []
     for k, opt in enumerate(p.variants["opts"], start=1):
         if p.variants["type"] == "color":
             options = {"color": opt["n"], "color_hex": opt["hex"]}
-            price, sale = Decimal(p.price), Decimal(p.sale) if p.sale else None
+            price, sale = _money(p.n, p.price), _money(p.n, p.sale) if p.sale else None
         else:
             options = {"size": opt["n"]}
-            price, sale = Decimal(opt["price"]), Decimal(opt["sale"]) if opt.get("sale") else None
+            price = _money(p.n, opt["price"])
+            sale = _money(p.n, opt["sale"]) if opt.get("sale") else None
         result.append(VariantIn(options=options, sku=f"DEMO-{p.n:02d}-{k}", price=price, sale_price=sale,
                                 stock=opt["stock"], sort_order=k))
     return result
@@ -291,10 +303,27 @@ async def seed(session: AsyncSession, *, update: bool = False) -> dict[str, int]
         if existing is not None:
             product_ids[p.n] = existing.id
             if update:
-                await products.update(
+                product_changes: dict[str, Any] = {
+                    "name": p.name,
+                    "description": p.desc,
+                    "attributes": _attributes(p),
+                    "currency": _currency(p.n),
+                }
+                if not p.variants:
+                    product_changes["price"] = _money(p.n, p.price)
+                    product_changes["sale_price"] = _money(p.n, p.sale) if p.sale else None
+                updated = await products.update(
                     existing.id,
-                    ProductUpdate(name=p.name, description=p.desc, attributes=_attributes(p)),
+                    ProductUpdate(**product_changes),
                 )
+                if p.variants:
+                    desired = _variants(p)
+                    for current, wanted in zip(updated.variants, desired, strict=True):
+                        await products.update_variant(
+                            existing.id,
+                            current.id,
+                            VariantUpdate(price=wanted.price, sale_price=wanted.sale_price),
+                        )
                 stats["updated"] += 1
             else:
                 stats["skipped"] += 1
@@ -302,11 +331,12 @@ async def seed(session: AsyncSession, *, update: bool = False) -> dict[str, int]
         category_slug = "perfumes" if p.type == "عطور" else p.cat
         is_variable = p.variants is not None
         created = await products.create(ProductCreate(
-            type=ProductType.variable if is_variable else ProductType.simple, name=p.name, slug=slug,
+            type=ProductType.variable if is_variable else ProductType.simple, currency=_currency(p.n),
+            name=p.name, slug=slug,
             description=p.desc, category_id=categories[category_slug].id, brand_id=brand_ids[p.brand],
             sku=None if is_variable else f"DEMO-{p.n:02d}",
-            price=None if is_variable else Decimal(p.price),
-            sale_price=None if is_variable or not p.sale else Decimal(p.sale),
+            price=None if is_variable else _money(p.n, p.price),
+            sale_price=None if is_variable or not p.sale else _money(p.n, p.sale),
             stock=None if is_variable else (p.stock or 0),
             attributes=_attributes(p), is_new=p.is_new,
             variants=_variants(p) if is_variable else None,
@@ -326,7 +356,8 @@ async def seed(session: AsyncSession, *, update: bool = False) -> dict[str, int]
     if existing_bundle is None:
         bundle = await products.create(ProductCreate(
             type=ProductType.bundle, name=BUNDLE["name"], slug=BUNDLE["slug"], description=BUNDLE["desc"],
-            category_id=gifts_id, sku="DEMO-BOX-1", price=Decimal(BUNDLE["price"]),
+            category_id=gifts_id, sku="DEMO-BOX-1", currency=Currency.syp,
+            price=_money(1, BUNDLE["price"]),
             bundle_items=[BundleItemIn(product_id=product_ids[n]) for n in BUNDLE["components"]],
         ))
         await products.upload_images(bundle.id, [placeholder("box", "#F3E3E8", "#B8174E")], None, None)
@@ -336,7 +367,10 @@ async def seed(session: AsyncSession, *, update: bool = False) -> dict[str, int]
     elif update:
         await products.update(
             existing_bundle.id,
-            ProductUpdate(name=BUNDLE["name"], description=BUNDLE["desc"], category_id=gifts_id),
+            ProductUpdate(
+                name=BUNDLE["name"], description=BUNDLE["desc"], category_id=gifts_id,
+                currency=Currency.syp, price=_money(1, BUNDLE["price"]),
+            ),
         )
         stats["updated"] += 1
     else:

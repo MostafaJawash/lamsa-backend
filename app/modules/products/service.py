@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, delete, exists, func, null, or_, select, union_all, update
+from sqlalchemy import and_, case, delete, exists, func, null, or_, select, union_all, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.storage.transaction import MediaTransaction
@@ -205,7 +205,8 @@ class AdminProductService:
 
         product = Product(
             type=data.type, name=data.name, slug=slug, description=data.description, category_id=category.id,
-            brand_id=data.brand_id, sku=sku, price=data.price, sale_price=data.sale_price, stock=data.stock,
+            brand_id=data.brand_id, sku=sku, currency=data.currency,
+            price=data.price, sale_price=data.sale_price, stock=data.stock,
             attributes=attributes, is_new=data.is_new, is_active=False, search_text="",
         )
         self.session.add(product)
@@ -267,6 +268,27 @@ class AdminProductService:
         price = changes.get("price", product.price)
         sale_price = changes.get("sale_price", product.sale_price) if "sale_price" in changes else product.sale_price
         check_sale_price(price, sale_price)
+        requested_currency = changes.get("currency", product.currency)
+        if requested_currency is None:
+            requested_currency = product.currency
+        if requested_currency != product.currency:
+            if product.type == ProductType.bundle:
+                component_currencies = await self.session.scalars(
+                    select(Product.currency)
+                    .join(BundleItem, BundleItem.product_id == Product.id)
+                    .where(BundleItem.bundle_product_id == product.id)
+                    .distinct()
+                )
+                if any(currency != requested_currency for currency in component_currencies.all()):
+                    raise ValidationFailed(ErrorCode.BUNDLE_CURRENCY_MISMATCH)
+            parent_currencies = await self.session.scalars(
+                select(Product.currency)
+                .join(BundleItem, BundleItem.bundle_product_id == Product.id)
+                .where(BundleItem.product_id == product.id)
+                .distinct()
+            )
+            if any(currency != requested_currency for currency in parent_currencies.all()):
+                raise ValidationFailed(ErrorCode.BUNDLE_CURRENCY_MISMATCH)
 
         # Validate everything before changing anything.
         category = await self._category(changes.get("category_id", product.category_id))
@@ -299,7 +321,7 @@ class AdminProductService:
 
         if "stock" in changes and changes["stock"] == 0 and (product.stock or 0) > 0:
             stash(self.session, StockOutEvent(product_id=product.id, variant_id=None))
-        for field in ("name", "description", "brand_id", "price", "sale_price", "stock", "is_new"):
+        for field in ("name", "description", "brand_id", "currency", "price", "sale_price", "stock", "is_new"):
             if field in changes:
                 setattr(product, field, changes[field])
         product.category_id = category.id
@@ -506,6 +528,11 @@ class AdminProductService:
                 raise _invalid_item(index, "a bundle cannot contain itself")
             if component.type == ProductType.bundle:
                 raise _invalid_item(index, "a bundle cannot contain another bundle")
+            if component.currency != product.currency:
+                raise ValidationFailed(
+                    ErrorCode.BUNDLE_CURRENCY_MISMATCH,
+                    details={"index": index, "bundle_currency": product.currency, "component_currency": component.currency},
+                )
             if component.type == ProductType.variable:
                 if item.variant_id is None:
                     raise _invalid_item(index, "variant_id is required for a variable product")
@@ -691,7 +718,8 @@ class AdminProductService:
         reasons = await self._publish_reasons(product, category, definitions)
 
         return AdminProductOut(
-            id=product.id, type=product.type, name=product.name, slug=product.slug, description=product.description,
+            id=product.id, type=product.type, currency=product.currency,
+            name=product.name, slug=product.slug, description=product.description,
             category=CategoryRef(id=category.id, name=category.name, slug=category.slug),
             brand=BrandRef(id=brand.id, name=brand.name, slug=brand.slug) if brand else None,
             sku=product.sku, price=product.price, sale_price=product.sale_price, stock=product.stock,
@@ -701,7 +729,8 @@ class AdminProductService:
             created_at=product.created_at, updated_at=product.updated_at,
             variants=[
                 AdminVariantOut(
-                    id=v.id, sku=v.sku, options=v.options, options_signature=v.options_signature,
+                    id=v.id, currency=product.currency, sku=v.sku,
+                    options=v.options, options_signature=v.options_signature,
                     color=v.options.get(color.key) if color else None, price=v.price, sale_price=v.sale_price,
                     current_price=v.sale_price if v.sale_price is not None else v.price, stock=v.stock,
                     is_active=v.is_active, sort_order=v.sort_order, created_at=v.created_at, updated_at=v.updated_at,
@@ -779,8 +808,14 @@ class AdminProductService:
         order = {
             AdminProductSort.newest: [Product.created_at.desc(), Product.id.desc()],
             AdminProductSort.name: [Product.name.asc(), Product.id.asc()],
-            AdminProductSort.price_asc: [Product.price_from.asc(), Product.id.desc()],
-            AdminProductSort.price_desc: [Product.price_from.desc(), Product.id.desc()],
+            AdminProductSort.price_asc: [
+                case((Product.currency == "SYP", 0), (Product.currency == "USD", 1), else_=2),
+                Product.price_from.asc(), Product.id.desc(),
+            ],
+            AdminProductSort.price_desc: [
+                case((Product.currency == "SYP", 0), (Product.currency == "USD", 1), else_=2),
+                Product.price_from.desc(), Product.id.desc(),
+            ],
             AdminProductSort.stock_asc: [stock.asc(), Product.id.desc()],
         }[sort]
         rows = (
@@ -806,7 +841,8 @@ class AdminProductService:
             card = repo.card_row(r)
             items.append(
                 AdminProductListItem(
-                    id=r.id, type=r.type, name=r.name, slug=r.slug, sku=r.sku, category=card.category, brand=card.brand,
+                    id=r.id, type=r.type, currency=r.currency,
+                    name=r.name, slug=r.slug, sku=r.sku, category=card.category, brand=card.brand,
                     image=image_urls(r.image_key), price_from=r.price_from,
                     stock=int(r.stock_value) if r.stock_value is not None else None, in_stock=r.in_stock,
                     is_on_sale=r.is_on_sale, is_new=r.is_new, is_active=r.is_active, created_at=r.created_at,

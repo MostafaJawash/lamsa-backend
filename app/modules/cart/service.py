@@ -36,6 +36,7 @@ from app.modules.cart.schemas import (
     CartPreviewOut,
     CartProduct,
     CartVariant,
+    CurrencyAmount,
     DeliveryQuote,
     LineIssue,
     MergeReportItem,
@@ -73,6 +74,8 @@ from app.shared.exceptions import (
     out_of_stock,
 )
 from app.shared.schemas import image_urls
+from app.shared.enums import Currency
+from app.shared.money import ordered_currencies, sum_by_currency, totals_with_fee
 
 logger = logging.getLogger(__name__)
 
@@ -183,10 +186,13 @@ def build_cart(
     images: dict[int, list[LoadedImage]],
     methods: Sequence[DeliveryMethod],
     notices: Sequence[CartNoticeOut] = (),
+    governorate: str | None = None,
+    delivery_method_code: str | None = None,
 ) -> tuple[CartOut, list[EvaluatedLine]]:
     lines: list[CartLineOut] = []
     evaluated: list[EvaluatedLine] = []
-    subtotal = savings = ZERO
+    subtotal_lines: list[tuple[Currency, Decimal]] = []
+    saving_lines: list[tuple[Currency, Decimal]] = []
     items_count = 0
     for row in rows:
         ev = evaluate(row, limits, loader)
@@ -196,10 +202,13 @@ def build_cart(
         ok = ev.issue is None
         line_total = prices.current * row.quantity if ok else ZERO
         if ok:
-            subtotal += line_total
+            currency = Currency(row.currency)
+            subtotal_lines.append((currency, line_total))
             items_count += row.quantity
             if prices.compare_at is not None:
-                savings += (prices.compare_at - prices.current) * row.quantity
+                saving_lines.append(
+                    (currency, (prices.compare_at - prices.current) * row.quantity)
+                )
         issue = None
         if ev.issue is not None:
             issue = LineIssue(
@@ -218,6 +227,7 @@ def build_cart(
                     id=row.variant_id, options=dict(row.variant_options or {}), label=variant_label(row.variant_options or {})
                 ) if row.variant_id is not None else None,
                 image=image_urls(line_image(row, images.get(row.product_id, []), loader)),
+                currency=row.currency,
                 unit_price=prices.current, regular_price=prices.regular, compare_at_price=prices.compare_at,
                 discount_percent=prices.discount_percent, line_total=line_total,
                 stock_status=status, stock_left=left,
@@ -232,21 +242,50 @@ def build_cart(
             )
         )
     issues_count = sum(1 for ev in evaluated if ev.issue is not None)
+    subtotals = sum_by_currency(subtotal_lines)
+    savings = sum_by_currency(saving_lines)
+    available_methods = [
+        method for method in methods
+        if governorate is None
+        or method.allowed_governorates is None
+        or governorate in method.allowed_governorates
+    ]
+    subtotal_rows = currency_amounts(subtotals)
+    quotes = [delivery_quote(m, subtotals) for m in available_methods]
+    selected = next((quote for quote in quotes if quote.code == delivery_method_code), None)
     cart = CartOut(
-        lines=lines, items_count=items_count, lines_count=len(lines), subtotal=subtotal, savings=savings,
-        delivery_quotes=[delivery_quote(m, subtotal) for m in methods],
+        lines=lines, items_count=items_count, lines_count=len(lines), subtotals=subtotal_rows,
+        savings=currency_amounts(savings),
+        delivery_fees=(
+            [CurrencyAmount(currency=selected.currency, amount=selected.fee)] if selected is not None else []
+        ),
+        totals=selected.totals if selected is not None else subtotal_rows,
+        selected_delivery_method_code=selected.code if selected is not None else None,
+        delivery_quotes=quotes,
         can_checkout=bool(lines) and issues_count == 0, issues_count=issues_count, notices=list(notices),
     )
     return cart, evaluated
 
 
-def delivery_quote(method: DeliveryMethod, subtotal: Decimal) -> DeliveryQuote:
+def currency_amounts(values: dict[Currency, Decimal]) -> list[CurrencyAmount]:
+    return [
+        CurrencyAmount(currency=currency, amount=values[currency])
+        for currency in ordered_currencies(values)
+    ]
+
+
+def delivery_quote(method: DeliveryMethod, subtotals: dict[Currency, Decimal]) -> DeliveryQuote:
+    currency = Currency(method.currency)
+    subtotal = subtotals.get(currency, ZERO)
     free = method.free_from is not None and subtotal >= method.free_from
     fee = ZERO if free else method.fee
     to_free = method.free_from - subtotal if method.free_from is not None and not free else None
     return DeliveryQuote(
-        code=method.code, name=method.name, description=method.description, fee=fee, is_free=fee == 0,
+        code=method.code, name=method.name, description=method.description,
+        currency=currency, fee=fee, is_free=fee == 0,
         free_from=method.free_from, amount_to_free_shipping=to_free, requires_address=method.requires_address,
+        fee_paid_to_carrier=method.fee_paid_to_carrier,
+        totals=currency_amounts(totals_with_fee(subtotals, currency, fee)),
     )
 
 
@@ -395,11 +434,25 @@ class CartService:
 
     # ----------------------------------------------------------------------- reads
 
-    async def get(self) -> CartOut:
-        return await self.render(None)
+    async def get(
+        self, governorate: str | None = None, delivery_method_code: str | None = None
+    ) -> CartOut:
+        return await self.render(
+            None, governorate=governorate, delivery_method_code=delivery_method_code
+        )
 
-    async def render(self, limits: StoreLimits | None, notices: Sequence[CartNoticeOut] = ()) -> CartOut:
-        cart, _ = await self._render(limits, notices)
+    async def render(
+        self,
+        limits: StoreLimits | None,
+        notices: Sequence[CartNoticeOut] = (),
+        *,
+        governorate: str | None = None,
+        delivery_method_code: str | None = None,
+    ) -> CartOut:
+        cart, _ = await self._render(
+            limits, notices, governorate=governorate,
+            delivery_method_code=delivery_method_code,
+        )
         return cart
 
     async def _render(
@@ -409,6 +462,8 @@ class CartService:
         *,
         lock_lines: bool = False,
         lock_products: bool = False,
+        governorate: str | None = None,
+        delivery_method_code: str | None = None,
     ) -> tuple[CartOut, tuple[list[LineRow], dict[int, list[LoadedImage]], list[DeliveryMethod], list[EvaluatedLine], StoreLimits]]:
         """limits=None: take them from the delivery-methods query (no extra statement)."""
         rows = await repo.load_lines(self.session, self.user_id, lock=lock_lines, lock_products=lock_products)
@@ -422,7 +477,10 @@ class CartService:
         else:
             methods, riding_limits = await repo.cached_delivery_methods(self.session)
         limits = limits or riding_limits or await load_limits(self.session, fresh=lock_products)
-        cart, evaluated = build_cart(rows, limits, self.loader, images, methods, notices)
+        cart, evaluated = build_cart(
+            rows, limits, self.loader, images, methods, notices,
+            governorate, delivery_method_code,
+        )
         return cart, (rows, images, methods, evaluated, limits)
 
     async def count(self) -> CartCountOut:
@@ -674,7 +732,8 @@ def preview_key(product_id: int, variant_id: int | None) -> str:
 def unknown_product_row(product_id: int, variant_id: int | None, quantity: int) -> LineRow:
     """A product that does not exist (any more): an UNAVAILABLE line with only its id."""
     return LineRow(
-        id=0, quantity=quantity, product_id=product_id, slug="", name="", type=ProductType.simple, price=None,
+        id=0, quantity=quantity, product_id=product_id, slug="", name="", type=ProductType.simple,
+        currency=Currency.syp, price=None,
         sale_price=None, stock=0, visible=False, brand_name=None, brand_slug=None, variant_id=variant_id,
         variant_options=None, variant_price=None, variant_sale_price=None, variant_stock=None, variant_active=None,
     )
@@ -688,7 +747,10 @@ class CartPreviewService:
         self.session = session
         self.loader = CartLoader(session)
 
-    async def preview(self, items: Sequence[CartPreviewItem]) -> CartPreviewOut:
+    async def preview(
+        self, items: Sequence[CartPreviewItem], governorate: str | None = None,
+        delivery_method_code: str | None = None,
+    ) -> CartPreviewOut:
         methods, limits = await repo.cached_delivery_methods(self.session)
         limits = limits or await load_limits(self.session)
 
@@ -727,7 +789,10 @@ class CartPreviewService:
         await self.loader.ensure_variants({r.product_id for r in rows if r.type == ProductType.variable})
         images = await repo.images_for(self.session, sorted({r.product_id for r in rows if r.slug}))
         await self.loader.ensure_components({r.product_id for r in rows if r.type == ProductType.bundle})
-        cart, _ = build_cart(rows, limits, self.loader, images, methods, notices)
+        cart, _ = build_cart(
+            rows, limits, self.loader, images, methods, notices,
+            governorate, delivery_method_code,
+        )
         lines = [
             CartPreviewLineOut(**line.model_dump(exclude={"id"}), key=preview_key(*key))
             for line, key in zip(cart.lines, wanted, strict=True)

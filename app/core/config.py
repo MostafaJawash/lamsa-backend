@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_IDS: CommaList = []
     GOOGLE_DEV_MODE: bool = False
 
-    DEFAULT_PHONE_REGION: str = "DE"
+    DEFAULT_PHONE_REGION: str = "SY"
     CORS_ORIGINS: CommaList = ["http://localhost:3000", "http://127.0.0.1:3000"]
     # Peers (IPs or CIDRs) whose X-Forwarded-For is read for the client IP: our Nginx and the
     # website server only. Empty: trust nobody, use the socket address (see README).

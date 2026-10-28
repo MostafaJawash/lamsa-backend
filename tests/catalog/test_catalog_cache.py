@@ -206,17 +206,28 @@ async def test_checkout_reads_delivery_fees_fresh(
     from sqlalchemy import update
 
     from app.modules.delivery.models import DeliveryMethod
-    from order_helpers import ORDERS
+    from order_helpers import ORDERS, address
 
     ok(await client.post("/api/v1/cart/items", json={"product_id": shop["simple"]["id"], "quantity": 1}, headers=customer_headers), 201)
     cart = ok(await client.get("/api/v1/cart", headers=customer_headers))
-    pickup = next(q for q in cart["delivery_quotes"] if q["code"] == "pickup")
-    await db_session.execute(update(DeliveryMethod).where(DeliveryMethod.code == "pickup").values(fee="2.00"))
+    quote = next(q for q in cart["delivery_quotes"] if q["code"] == "damascus_courier")
+    await db_session.execute(
+        update(DeliveryMethod).where(DeliveryMethod.code == "damascus_courier").values(fee="20000.00")
+    )
     await db_session.commit()  # no bump: other workers would still show the old fee for up to 60 s
     again = ok(await client.get("/api/v1/cart", headers=customer_headers))
-    assert next(q for q in again["delivery_quotes"] if q["code"] == "pickup")["fee"] == pickup["fee"]  # cart view: stale copy
-    stale_total = f"{float(cart['subtotal']) + float(pickup['fee']):.2f}"
-    placed = await client.post(ORDERS, json={"delivery_method_code": "pickup", "expected_total": stale_total}, headers=customer_headers)
+    assert next(q for q in again["delivery_quotes"] if q["code"] == "damascus_courier")["fee"] == quote["fee"]
+    destination = await address(client, customer_headers)
+    stale_totals = {row["currency"]: row["amount"] for row in quote["totals"]}
+    placed = await client.post(
+        ORDERS,
+        json={
+            "delivery_method_code": "damascus_courier",
+            "address_id": destination["id"],
+            "expected_totals": stale_totals,
+        },
+        headers=customer_headers,
+    )
     assert placed.status_code == 409 and placed.json()["error"]["code"] == "PRICE_CHANGED"  # checkout: fresh fee
 
 

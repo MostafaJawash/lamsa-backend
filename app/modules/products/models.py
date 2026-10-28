@@ -7,6 +7,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CHAR,
     CheckConstraint,
     Computed,
     ForeignKey,
@@ -23,6 +24,7 @@ from app.db.base import Base, table_args
 from app.db.mixins import CreatedAtMixin, IdMixin, TimestampMixin
 from app.db.types import MONEY_ZERO_DEFAULT, Money, str_enum
 from app.modules.products.enums import ProductType
+from app.shared.enums import Currency
 
 if TYPE_CHECKING:
     from app.modules.brands.models import Brand
@@ -49,6 +51,7 @@ class Product(IdMixin, TimestampMixin, Base):
             name="sale_price_lt_price",
         ),
         CheckConstraint("price IS NULL OR price >= 0", name="price_non_negative"),
+        CheckConstraint("currency IN ('SYP', 'USD')", name="currency_supported"),
         CheckConstraint("stock IS NULL OR stock >= 0", name="stock_non_negative"),
         Index("ix_products_is_active_is_new", "is_active", "is_new"),
         Index("ix_products_is_active_is_on_sale", "is_active", "is_on_sale"),
@@ -77,6 +80,7 @@ class Product(IdMixin, TimestampMixin, Base):
     )
     type: Mapped[ProductType] = mapped_column(str_enum(ProductType))
     sku: Mapped[str | None] = mapped_column(String(64), unique=True)  # simple and bundle
+    currency: Mapped[Currency] = mapped_column(CHAR(3), default=Currency.syp)
     price: Mapped[Decimal | None] = mapped_column(Money)  # simple and bundle only
     sale_price: Mapped[Decimal | None] = mapped_column(Money)
     stock: Mapped[int | None] = mapped_column(Integer)  # simple only; bundle stock is derived

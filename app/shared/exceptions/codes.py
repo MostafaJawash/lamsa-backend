@@ -36,6 +36,7 @@ class ErrorCode(StrEnum):
     # Addresses
     ADDRESS_NOT_FOUND = "ADDRESS_NOT_FOUND"
     ADDRESS_LIMIT_REACHED = "ADDRESS_LIMIT_REACHED"
+    INVALID_LOCATION = "INVALID_LOCATION"
 
     # Admin
     CANNOT_MODIFY_SELF = "CANNOT_MODIFY_SELF"
@@ -75,6 +76,8 @@ class ErrorCode(StrEnum):
     VARIANT_HAS_ORDERS = "VARIANT_HAS_ORDERS"
     VARIANT_IN_BUNDLE = "VARIANT_IN_BUNDLE"
     INVALID_BUNDLE_ITEM = "INVALID_BUNDLE_ITEM"
+    BUNDLE_CURRENCY_MISMATCH = "BUNDLE_CURRENCY_MISMATCH"
+    UNSUPPORTED_CURRENCY = "UNSUPPORTED_CURRENCY"
     STOCK_NEGATIVE = "STOCK_NEGATIVE"
 
     # Catalog: images and uploads
@@ -101,6 +104,7 @@ class ErrorCode(StrEnum):
     CART_EMPTY = "CART_EMPTY"
     CART_HAS_ISSUES = "CART_HAS_ISSUES"
     DELIVERY_METHOD_NOT_FOUND = "DELIVERY_METHOD_NOT_FOUND"
+    DELIVERY_METHOD_NOT_AVAILABLE = "DELIVERY_METHOD_NOT_AVAILABLE"
     ADDRESS_REQUIRED = "ADDRESS_REQUIRED"
     PRICE_CHANGED = "PRICE_CHANGED"
     ORDER_NOT_CANCELLABLE = "ORDER_NOT_CANCELLABLE"
@@ -202,6 +206,15 @@ MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.INVALID_LINK: "الرابط غير صحيح.",
     ErrorCode.SERVICE_BUSY: "الخدمة مشغولة حاليًا، حاول مرة أخرى بعد لحظات.",
 }
+
+MESSAGES.update(
+    {
+        ErrorCode.INVALID_LOCATION: "الموقع المحدد غير صالح أو خارج سوريا.",
+        ErrorCode.BUNDLE_CURRENCY_MISMATCH: "يجب أن تكون جميع منتجات الحزمة بالعملة نفسها.",
+        ErrorCode.UNSUPPORTED_CURRENCY: "العملة المحددة غير مدعومة.",
+        ErrorCode.DELIVERY_METHOD_NOT_AVAILABLE: "طريقة التوصيل غير متاحة لهذه المحافظة.",
+    }
+)
 
 
 class CartIssue(StrEnum):

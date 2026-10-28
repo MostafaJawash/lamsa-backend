@@ -3,7 +3,7 @@
 The password is asked interactively (never pass it as an argument: it would end up in the
 shell history and process list).
 
-Run with:  python -m scripts.create_admin --name "Store Admin" --phone 0151 23456789
+Run with:  python -m scripts.create_admin --name "Store Admin" --phone 0933 123 456
 """
 
 import argparse

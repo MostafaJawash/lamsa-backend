@@ -10,6 +10,7 @@ from app.modules.categories.schemas import CategoryRef
 from app.modules.products.enums import ProductType
 from app.shared.money import MoneyIn, MoneyOut
 from app.shared.schemas import ImageUrls
+from app.shared.enums import Currency
 
 ProductName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 Slug = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
@@ -52,6 +53,7 @@ class ProductCardOut(BaseModel):
     slug: str
     name: str
     type: ProductType
+    currency: Currency
     brand: BrandRef | None
     category: CategoryRef
     image: ImageUrls | None = Field(description="Main image (lowest sort_order)")
@@ -98,6 +100,7 @@ class VariantOptionOut(BaseModel):
 
 class VariantOut(BaseModel):
     id: int
+    currency: Currency
     options: dict[str, str]
     price: MoneyOut
     sale_price: MoneyOut | None
@@ -146,6 +149,7 @@ class BrandFacet(BaseModel):
 
 
 class PriceRange(BaseModel):
+    currency: Currency
     min: MoneyOut | None
     max: MoneyOut | None
 
@@ -175,7 +179,7 @@ class OptionFacet(BaseModel):
 
 class FacetsOut(BaseModel):
     brands: list[BrandFacet]
-    price: PriceRange
+    prices: list[PriceRange]
     attributes: list[AttributeFacet] = []
     options: list[OptionFacet] = []
 
@@ -217,6 +221,7 @@ class BundleItemsIn(BaseModel):
 
 class ProductCreate(BaseModel):
     type: ProductType
+    currency: Currency = Currency.syp
     name: ProductName
     slug: Slug | None = None
     description: str | None = Field(default=None, max_length=20_000)
@@ -240,6 +245,7 @@ class ProductUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: ProductType | None = None
+    currency: Currency | None = None
     name: ProductName | None = None
     slug: Slug | None = None
     description: str | None = Field(default=None, max_length=20_000)
@@ -282,6 +288,7 @@ class ImageOrder(BaseModel):
 
 class AdminVariantOut(BaseModel):
     id: int
+    currency: Currency
     sku: str
     options: dict[str, str]
     options_signature: str
@@ -333,6 +340,7 @@ class ProductWarning(BaseModel):
 class AdminProductOut(BaseModel):
     id: int
     type: ProductType
+    currency: Currency
     name: str
     slug: str
     description: str | None
@@ -361,6 +369,7 @@ class AdminProductOut(BaseModel):
 class AdminProductListItem(BaseModel):
     id: int
     type: ProductType
+    currency: Currency
     name: str
     slug: str
     sku: str | None

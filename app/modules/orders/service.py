@@ -24,7 +24,7 @@ from app.modules.cart.service import CartService, CheckoutSnapshot, delivery_quo
 from app.modules.orders import repository as repo
 from app.modules.orders import stock, workflow
 from app.modules.orders.enums import OrderStatus, PaymentMethod, PaymentStatus
-from app.modules.orders.models import Order, OrderItem, OrderStatusHistory
+from app.modules.orders.models import Order, OrderItem, OrderStatusHistory, OrderTotal
 from app.modules.orders.schemas import (
     AdminOrderDetailOut,
     AdminOrderSummaryOut,
@@ -37,6 +37,9 @@ from app.modules.orders.schemas import (
     OrderSort,
     OrderStats,
     OrderSummaryOut,
+    OrderStatusGroup,
+    OrderTotalOut,
+    CurrencyStat,
     TimelineStepOut,
     TopProduct,
 )
@@ -50,6 +53,7 @@ from app.shared.events import EventBuffer, OrderCancelled, OrderPlaced, OrderSta
 from app.shared.exceptions import Conflict, ErrorCode, NotFound, ValidationFailed
 from app.shared.money import format_money
 from app.shared.schemas import image_urls
+from app.shared.enums import Currency
 
 logger = logging.getLogger(__name__)
 
@@ -83,14 +87,26 @@ def items_out(items: Sequence[OrderItem], slugs: dict[int, str]) -> list[OrderIt
         OrderItemOut(
             product_id=i.product_id, product_slug=slugs.get(i.product_id) if i.product_id else None,
             name=i.product_name, variant_label=i.variant_label, options=i.options, image=image_urls(i.image_key),
+            currency=i.currency,
             unit_price=i.unit_price, quantity=i.quantity, line_total=i.line_total, bundle_contents=i.bundle_contents,
         )
         for i in items
     ]
 
 
+def totals_out(totals: Sequence[OrderTotal]) -> list[OrderTotalOut]:
+    return [
+        OrderTotalOut(
+            currency=t.currency, subtotal=t.subtotal, discount=t.discount,
+            shipping_fee=t.shipping_fee, total=t.total, is_legacy=t.is_legacy,
+        )
+        for t in totals
+    ]
+
+
 def detail_out(
-    order: Order, items: Sequence[OrderItem], history: Sequence[workflow.HistoryEntry], slugs: dict[int, str],
+    order: Order, items: Sequence[OrderItem], totals: Sequence[OrderTotal],
+    history: Sequence[workflow.HistoryEntry], slugs: dict[int, str],
     *, can_cancel: bool,
 ) -> dict[str, Any]:
     pickup = is_pickup(order)
@@ -98,10 +114,13 @@ def detail_out(
         "id": order.id, "created_at": order.created_at, "status": order.status,
         "status_label": workflow.label(order.status, pickup), "payment_method": order.payment_method,
         "payment_status": order.payment_status,
-        "delivery": DeliveryOut(code=order.delivery_method_code, name=order.delivery_method_name),
+        "delivery": DeliveryOut(
+            code=order.delivery_method_code, name=order.delivery_method_name,
+            currency=order.delivery_method_currency,
+            fee_paid_to_carrier=order.delivery_fee_paid_to_carrier,
+        ),
         "shipping_address": order.shipping_address, "customer_notes": order.customer_notes,
-        "gift_message": order.gift_message, "items": items_out(items, slugs), "subtotal": order.subtotal,
-        "discount": order.discount, "shipping_fee": order.shipping_fee, "total": order.total,
+        "gift_message": order.gift_message, "items": items_out(items, slugs), "totals": totals_out(totals),
         "timeline": [
             TimelineStepOut(status=s.status, label=s.label, reached_at=s.reached_at, is_current=s.is_current,
                             cancel_reason=s.cancel_reason)
@@ -111,12 +130,19 @@ def detail_out(
     }
 
 
-def summary_out(row: Any) -> dict[str, Any]:
+def summary_out(row: Any, totals: Sequence[OrderTotal]) -> dict[str, Any]:
     return {
         "id": row.id, "created_at": row.created_at, "status": row.status,
         "status_label": workflow.label(row.status, row.shipping_address is None), "items_count": int(row.items_count),
-        "total": row.total, "image": image_urls(row.image_key), "delivery_method_name": row.delivery_method_name,
+        "totals": totals_out(totals), "image": image_urls(row.image_key),
+        "delivery_method_name": row.delivery_method_name,
     }
+
+
+def map_url(address: dict[str, Any] | None) -> str | None:
+    if not address or address.get("latitude") is None or address.get("longitude") is None:
+        return None
+    return f"https://www.google.com/maps?q={address['latitude']},{address['longitude']}"
 
 
 # ============================================================================ cancelling
@@ -218,17 +244,29 @@ class OrderService:
             address = await repo.user_address(self.session, self.user_id, data.address_id)
             if address is None:
                 raise NotFound(ErrorCode.ADDRESS_NOT_FOUND)
+            if (
+                method.allowed_governorates is not None
+                and address.governorate not in method.allowed_governorates
+            ):
+                raise ValidationFailed(
+                    ErrorCode.DELIVERY_METHOD_NOT_AVAILABLE,
+                    details={"code": method.code, "governorate": address.governorate},
+                )
         elif data.address_id is not None:
             raise field_error("address_id", "pickup orders take no address")
 
         # 5-6. Totals with the cart's own functions, compared with what the customer saw.
-        subtotal = snapshot.cart.subtotal
-        shipping_fee = delivery_quote(method, subtotal).fee
-        discount = ZERO
-        total = subtotal - discount + shipping_fee
-        if total != data.expected_total:
+        subtotals = {row.currency: row.amount for row in snapshot.cart.subtotals}
+        quote = delivery_quote(method, subtotals)
+        expected = dict(data.expected_totals)
+        actual = {row.currency: row.amount for row in quote.totals}
+        if actual != expected:
             raise Conflict(ErrorCode.PRICE_CHANGED, details={
-                "expected_total": format_money(data.expected_total), "total": format_money(total),
+                "expected_totals": [
+                    {"currency": currency.value, "amount": format_money(amount)}
+                    for currency, amount in expected.items()
+                ],
+                "totals": [row.model_dump(mode="json") for row in quote.totals],
                 "cart": snapshot.cart.model_dump(mode="json"),
             })
 
@@ -241,17 +279,35 @@ class OrderService:
         order = Order(
             user_id=self.user_id, customer_name=self.user_name, customer_phone=self.user_phone,
             shipping_address={
-                "label": address.label, "city": address.city, "street": address.street,
-                "building": address.building, "notes": address.notes,
+                "label": address.label, "governorate": address.governorate, "area": address.area,
+                "details": address.details,
+                "latitude": str(address.latitude) if address.latitude is not None else None,
+                "longitude": str(address.longitude) if address.longitude is not None else None,
+                "notes": address.notes,
             } if address is not None else None,
             delivery_method_id=method.id, delivery_method_code=method.code, delivery_method_name=method.name,
+            delivery_method_currency=method.currency,
+            delivery_fee_paid_to_carrier=method.fee_paid_to_carrier,
             payment_method=PaymentMethod.cod, payment_status=PaymentStatus.pending, status=OrderStatus.pending,
-            subtotal=subtotal, discount=discount, shipping_fee=shipping_fee, total=total,
             customer_notes=_blank_to_none(data.customer_notes), gift_message=_blank_to_none(data.gift_message),
             idempotency_key=key, created_at=now, updated_at=now,
         )
         self.session.add(order)
         await self.session.flush()
+        quote_fee = quote.fee
+        totals = [
+            OrderTotal(
+                order_id=order.id,
+                currency=currency.value,
+                subtotal=subtotals.get(currency, ZERO),
+                discount=ZERO,
+                shipping_fee=quote_fee if currency == Currency(method.currency) else ZERO,
+                total=amount,
+                is_legacy=False,
+            )
+            for currency, amount in actual.items()
+        ]
+        self.session.add_all(totals)
         items = self._items(order.id, snapshot)
         # One multi-row INSERT ... VALUES (an executemany would be split per NULL-column pattern).
         await self.session.execute(insert(OrderItem).values([self._item_row(i) for i in items]))
@@ -267,7 +323,8 @@ class OrderService:
 
         # 13. Events, published only after the commit succeeded.
         self.events.add(OrderPlaced(
-            order_id=order.id, user_id=self.user_id, total=format_money(total),
+            order_id=order.id, user_id=self.user_id,
+            total="، ".join(f"{format_money(amount)} {currency.value}" for currency, amount in actual.items()),
             items_count=sum(i.quantity for i in items), delivery_method_name=method.name,
             is_pickup=address is None,
         ))
@@ -276,7 +333,7 @@ class OrderService:
         await commit_and_publish(self.session, self.events)
         history = [workflow.HistoryEntry(OrderStatus.pending, now)]
         slugs = {r.product_id: r.slug for r in snapshot.rows}
-        detail = OrderDetailOut(**detail_out(order, items, history, slugs, can_cancel=True))
+        detail = OrderDetailOut(**detail_out(order, items, totals, history, slugs, can_cancel=True))
         return PlacedOrder(detail, created=True)
 
     @staticmethod
@@ -306,6 +363,7 @@ class OrderService:
                 variant_label=variant_label(options) if options else None, options=options,
                 sku=row.variant_sku or row.product_sku,
                 image_key=line_image(row, snapshot.images.get(row.product_id, []), snapshot.loader),
+                currency=row.currency,
                 unit_price=prices.current, quantity=row.quantity, line_total=prices.current * row.quantity,
                 bundle_contents=[
                     {"product_id": c.product_id, "variant_id": c.variant_id, "name": c.product_name,
@@ -321,30 +379,37 @@ class OrderService:
         return {
             "order_id": item.order_id, "product_id": item.product_id, "variant_id": item.variant_id,
             "product_name": item.product_name, "variant_label": item.variant_label, "options": item.options,
-            "sku": item.sku, "image_key": item.image_key, "unit_price": item.unit_price, "quantity": item.quantity,
+            "sku": item.sku, "image_key": item.image_key, "currency": item.currency,
+            "unit_price": item.unit_price, "quantity": item.quantity,
             "line_total": item.line_total, "bundle_contents": item.bundle_contents,
         }
 
     # --------------------------------------------------------------------- reads
 
-    async def list(self, params: PageParams, status: OrderStatus | None) -> Page[OrderSummaryOut]:
+    async def list(
+        self, params: PageParams, status: OrderStatus | None, status_group: OrderStatusGroup | None
+    ) -> Page[OrderSummaryOut]:
         rows, conditions = await repo.list_orders(
-            self.session, user_id=self.user_id, status=status, offset=params.offset, limit=params.page_size
+            self.session, user_id=self.user_id, status=status, status_group=status_group,
+            offset=params.offset, limit=params.page_size
         )
         total = int(rows[0].total_rows) if rows else (await repo.count_orders(self.session, conditions) if params.page > 1 else 0)
+        totals = await repo.totals_for_orders(self.session, [row.id for row in rows])
         return Page[OrderSummaryOut](
-            items=[OrderSummaryOut(**summary_out(r)) for r in rows], page=params.page, page_size=params.page_size, total=total
+            items=[OrderSummaryOut(**summary_out(r, totals.get(r.id, []))) for r in rows],
+            page=params.page, page_size=params.page_size, total=total
         )
 
     async def get(self, order_id: int) -> OrderDetailOut:
-        order = await repo.get_order(self.session, order_id, user_id=self.user_id)
+        order = await repo.get_order(self.session, order_id, user_id=self.user_id, with_totals=True)
         if order is None:
             raise NotFound(ErrorCode.ORDER_NOT_FOUND)
         items = await repo.items_of(self.session, order.id)
+        totals = sorted(order.totals, key=lambda total: (total.currency != "SYP", total.currency != "USD"))
         history = await repo.history_of(self.session, order.id)
         slugs = await repo.visible_slugs(self.session, [i.product_id for i in items if i.product_id])
         entries = [workflow.HistoryEntry(h.to_status, h.created_at) for h in history]
-        return OrderDetailOut(**detail_out(order, items, entries, slugs,
+        return OrderDetailOut(**detail_out(order, items, totals, entries, slugs,
                                            can_cancel=workflow.can_customer_cancel(order.status)))
 
     # ---------------------------------------------------------------- cancelling
@@ -394,25 +459,28 @@ class AdminOrderService:
             date_to=date_to, sort=sort, offset=params.offset, limit=params.page_size,
         )
         total = int(rows[0].total_rows) if rows else (await repo.count_orders(self.session, conditions) if params.page > 1 else 0)
+        totals = await repo.totals_for_orders(self.session, [row.id for row in rows])
         return Page[AdminOrderSummaryOut](
             items=[
-                AdminOrderSummaryOut(**summary_out(r), user_id=r.user_id, customer_name=r.customer_name,
-                                     customer_phone=r.customer_phone)
+                AdminOrderSummaryOut(**summary_out(r, totals.get(r.id, [])),
+                                     user_id=r.user_id, customer_name=r.customer_name,
+                                     customer_phone=r.customer_phone, map_url=map_url(r.shipping_address))
                 for r in rows
             ],
             page=params.page, page_size=params.page_size, total=total,
         )
 
     async def get(self, order_id: int) -> AdminOrderDetailOut:
-        order = await repo.get_order(self.session, order_id)
+        order = await repo.get_order(self.session, order_id, with_totals=True)
         if order is None:
             raise NotFound(ErrorCode.ORDER_NOT_FOUND)
         items = await repo.items_of(self.session, order.id)
+        totals = sorted(order.totals, key=lambda total: (total.currency != "SYP", total.currency != "USD"))
         history = await repo.history_of(self.session, order.id)
         slugs = await repo.visible_slugs(self.session, [i.product_id for i in items if i.product_id])
         customer = await repo.customer_with_orders_count(self.session, order.user_id)
         entries = [workflow.HistoryEntry(h.to_status, h.created_at) for h in history]
-        base = detail_out(order, items, entries, slugs, can_cancel=workflow.can_admin_cancel(order.status))
+        base = detail_out(order, items, totals, entries, slugs, can_cancel=workflow.can_admin_cancel(order.status))
         user, orders_count = customer if customer else (None, 0)
         return AdminOrderDetailOut(
             **base,
@@ -426,6 +494,7 @@ class AdminOrderService:
                 for h in history
             ],
             allowed_next_statuses=workflow.allowed_next(order.status, is_pickup(order)),
+            map_url=map_url(order.shipping_address),
         )
 
     async def change_status(self, order_id: int, to_status: OrderStatus, note: str | None) -> AdminOrderDetailOut:
@@ -466,16 +535,26 @@ class AdminOrderService:
 
     async def stats(self, date_from: date | None, date_to: date | None) -> OrderStats:
         conditions = repo.utc_range(date_from, date_to)
-        totals = await repo.status_totals(self.session, conditions)
+        counts, totals = await repo.status_totals(self.session, conditions)
         top = await repo.top_products(self.session, conditions)
-        orders_count = sum(count for count, _ in totals.values())
-        delivered_count, delivered_revenue = totals.get(OrderStatus.delivered, (0, ZERO))
-        cancelled = totals.get(OrderStatus.cancelled, (0, ZERO))[0]
+        orders_count = sum(counts.values())
+        cancelled = counts.get(OrderStatus.cancelled, 0)
+        delivered = [
+            (currency, count, revenue)
+            for (status, currency), (count, revenue) in totals.items()
+            if status == OrderStatus.delivered
+        ]
         return OrderStats(
             date_from=date_from, date_to=date_to, orders_count=orders_count,
-            counts={s.value: totals.get(s, (0, ZERO))[0] for s in OrderStatus},
-            delivered_revenue=delivered_revenue,
-            average_order_value=(delivered_revenue / delivered_count).quantize(Decimal("0.01")) if delivered_count else ZERO,
+            counts={s.value: counts.get(s, 0) for s in OrderStatus},
+            delivered_revenue=[CurrencyStat(currency=c, amount=revenue) for c, _, revenue in delivered],
+            average_order_value=[
+                CurrencyStat(
+                    currency=c,
+                    amount=(revenue / count).quantize(Decimal("0.01")) if count else ZERO,
+                )
+                for c, count, revenue in delivered
+            ],
             cancelled_rate=round(cancelled / orders_count, 4) if orders_count else 0.0,
             top_products=[TopProduct(product_id=p, name=n, quantity=q) for p, n, q in top],
         )

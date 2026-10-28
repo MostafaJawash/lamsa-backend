@@ -65,9 +65,9 @@ async def test_phone_account_changes_phone_with_password(client: AsyncClient) ->
     assert wrong.status_code == 401 and error_code(wrong) == "INVALID_CREDENTIALS"
 
     ok = await client.post(
-        "/api/v1/users/me/phone", json={"phone": "0151 2345 6773", "current_password": PASSWORD}, headers=headers
+        "/api/v1/users/me/phone", json={"phone": "0933 123 499", "current_password": PASSWORD}, headers=headers
     )
-    assert ok.status_code == 200 and ok.json()["phone"] == phone(73)
+    assert ok.status_code == 200 and ok.json()["phone"] == "+963933123499"
 
     unchanged = await client.post(
         "/api/v1/users/me/phone", json={"phone": phone(73), "current_password": PASSWORD}, headers=headers
@@ -101,7 +101,11 @@ async def test_delete_account_without_orders(client: AsyncClient, db_session: As
     data = await register(client, 78)
     headers = bearer(data["access_token"])
     user_id = data["user"]["id"]
-    await client.post("/api/v1/users/me/addresses", json={"city": "Berlin", "street": "Str 1"}, headers=headers)
+    await client.post(
+        "/api/v1/users/me/addresses",
+        json={"governorate": "damascus", "details": "المزة، شارع الجلاء، بناء ٣"},
+        headers=headers,
+    )
     await client.post("/api/v1/users/me/devices", json={"fcm_token": "tok-78", "platform": "android"}, headers=headers)
     # A rotated chain of refresh tokens (self-referencing FK) must cascade cleanly too.
     await client.post("/api/v1/auth/refresh", json={"refresh_token": data["refresh_token"]})
@@ -125,14 +129,17 @@ async def test_delete_account_with_orders_is_anonymised(client: AsyncClient, db_
     data = await register(client, 79)
     headers = bearer(data["access_token"])
     user_id = data["user"]["id"]
-    await client.post("/api/v1/users/me/addresses", json={"city": "Berlin", "street": "Str 1"}, headers=headers)
+    await client.post(
+        "/api/v1/users/me/addresses",
+        json={"governorate": "damascus", "details": "شارع بغداد، بناء ١"},
+        headers=headers,
+    )
     await client.post("/api/v1/users/me/devices", json={"fcm_token": "tok-79", "platform": "ios"}, headers=headers)
     # Insert an order directly (lamsa_test only, inside the rolled-back test transaction).
     db_session.add(
         Order(
             user_id=user_id, customer_name="Test User", customer_phone=phone(79),
             delivery_method_code="home", delivery_method_name="توصيل للبيت",
-            subtotal=Decimal("10.00"), shipping_fee=Decimal("4.95"), total=Decimal("14.95"),
         )
     )
     await db_session.commit()

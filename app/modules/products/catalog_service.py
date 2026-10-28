@@ -56,6 +56,7 @@ from app.modules.settings.service import hide_out_of_stock, parse_int_setting
 from app.shared.dependencies.pagination import Page, PageParams
 from app.shared.exceptions import ErrorCode, NotFound
 from app.shared.schemas import image_urls
+from app.shared.enums import Currency
 from app.shared.utils.search import build_boolean_query
 
 FACET_ATTRIBUTE_TYPES = {AttributeType.select, AttributeType.multiselect, AttributeType.boolean, AttributeType.number}
@@ -68,6 +69,7 @@ class ListQuery:
     q: str | None
     min_price: Decimal | None
     max_price: Decimal | None
+    price_currency: Currency
     in_stock: bool
     on_sale: bool
     is_new: bool
@@ -95,6 +97,7 @@ class CatalogProductService:
         category: Category | None = None
         filters = ProductFilters(
             brand_slugs=list(dict.fromkeys(query.brands)), min_price=query.min_price, max_price=query.max_price,
+            price_currency=query.price_currency,
             in_stock=query.in_stock, hide_out_of_stock=await hide_out_of_stock(self.session),
             on_sale=query.on_sale, is_new=query.is_new,
         )
@@ -176,11 +179,14 @@ class CatalogProductService:
     async def facets(self, query: ListQuery) -> FacetsOut:
         resolved = await self._resolve(query, need_definitions=True)
         if resolved.empty:
-            return FacetsOut(brands=[], price=PriceRange(min=None, max=None))
+            return FacetsOut(brands=[], prices=[])
         filters = resolved.filters
         brands = [BrandFacet(slug=s, name=n, count=c) for s, n, c in await repo.brand_facet(self.session, filters)]
-        low, high = await repo.price_facet(self.session, filters)
-        result = FacetsOut(brands=brands, price=PriceRange(min=low, max=high))
+        ranges = await repo.price_facets(self.session, filters)
+        result = FacetsOut(
+            brands=brands,
+            prices=[PriceRange(currency=currency, min=low, max=high) for currency, low, high in ranges],
+        )
         definitions = resolved.definitions
         if resolved.category is None or definitions is None:
             return result
@@ -248,7 +254,8 @@ class CatalogProductService:
 
         card = build_card(
             CardRow(
-                id=product.id, slug=product.slug, name=product.name, type=product.type, price=product.price,
+                id=product.id, slug=product.slug, name=product.name, type=product.type,
+                currency=product.currency, price=product.price,
                 sale_price=product.sale_price, price_from=product.price_from, is_new=product.is_new,
                 is_on_sale=product.is_on_sale, in_stock=product.in_stock,
                 brand=BrandRef(id=brand.id, name=brand.name, slug=brand.slug) if brand else None,
@@ -281,7 +288,8 @@ class CatalogProductService:
                 prices = price_info(v.price, v.sale_price)
                 detail.variants.append(
                     VariantOut(
-                        id=v.id, options=v.options, price=prices.regular, sale_price=v.sale_price,
+                        id=v.id, currency=product.currency, options=v.options,
+                        price=prices.regular, sale_price=v.sale_price,
                         current_price=prices.current, discount_percent=prices.discount_percent,
                         stock_status=status, stock_left=left,
                         image_ids=variant_image_ids(v, images, colors, color_key),

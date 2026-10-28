@@ -38,7 +38,6 @@ async def test_list_search_filter_paginate(
         Order(
             user_id=created[0]["id"], customer_name="Mona Ali", customer_phone=phone(10),
             delivery_method_code="pickup", delivery_method_name="استلام",
-            subtotal=Decimal("5"), shipping_fee=Decimal("0"), total=Decimal("5"),
         )
     )
     await db_session.commit()
@@ -54,7 +53,7 @@ async def test_list_search_filter_paginate(
     mona = next(u for u in by_name["items"] if u["name"] == "Mona Ali")
     assert mona["orders_count"] == 1 and mona["is_active"] is True and "last_login_at" in mona
 
-    by_phone = (await client.get(BASE, params={"search": "4567 12".replace(" ", "")}, headers=headers)).json()
+    by_phone = (await client.get(BASE, params={"search": "1234 12".replace(" ", "")}, headers=headers)).json()
     assert [u["name"] for u in by_phone["items"]] == ["Mona Hassan"]
 
     wildcard = (await client.get(BASE, params={"search": "%"}, headers=headers)).json()

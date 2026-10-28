@@ -9,7 +9,7 @@ from app.modules.categories.models import Category, CategoryAttribute, CategoryV
 from app.modules.delivery.models import DeliveryMethod
 from app.modules.favorites.models import Favorite
 from app.modules.notifications.models import Notification, NotificationRead, UserAlertLog
-from app.modules.orders.models import Order, OrderItem, OrderStatusHistory
+from app.modules.orders.models import Order, OrderItem, OrderStatusHistory, OrderTotal
 from app.modules.products.models import BundleItem, Product, ProductImage, ProductVariant
 from app.modules.settings.models import StoreSetting
 from app.modules.users.models import User, UserAddress, UserDevice
@@ -31,6 +31,7 @@ __all__ = [
     "Order",
     "OrderItem",
     "OrderStatusHistory",
+    "OrderTotal",
     "Product",
     "ProductImage",
     "ProductVariant",

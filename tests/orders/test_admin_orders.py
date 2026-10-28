@@ -7,7 +7,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import clock
-from app.modules.orders.models import Order
+from app.modules.orders.models import Order, OrderTotal
 from app.modules.products.models import Product
 from cart_fixtures import ADMIN, build_shop
 from catalog_helpers import code_of, ok
@@ -55,19 +55,13 @@ async def test_delivery_workflow(client: AsyncClient, admin_headers: dict, custo
 
 
 async def test_pickup_workflow(client: AsyncClient, admin_headers: dict, customer_headers: dict, shop: dict) -> None:
-    order = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)], method="pickup")
+    order = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)])
     ok(await move(client, admin_headers, order["id"], "preparing"))
-    shipped = await move(client, admin_headers, order["id"], "shipped")
-    assert code_of(shipped) == "INVALID_STATUS_TRANSITION" and shipped.json()["error"]["details"]["allowed"] == ["ready_for_pickup"]
-    ready = ok(await move(client, admin_headers, order["id"], "ready_for_pickup"))
-    assert ready["status_label"] == "جاهز للاستلام"
+    ready = await move(client, admin_headers, order["id"], "ready_for_pickup")
+    assert code_of(ready) == "INVALID_STATUS_TRANSITION"
+    ok(await move(client, admin_headers, order["id"], "shipped"))
     done = ok(await move(client, admin_headers, order["id"], "delivered"))
-    assert (done["status_label"], done["payment_status"]) == ("تم الاستلام", "paid")
-
-    delivery = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)])
-    ok(await move(client, admin_headers, delivery["id"], "preparing"))
-    wrong = await move(client, admin_headers, delivery["id"], "ready_for_pickup")
-    assert code_of(wrong) == "INVALID_STATUS_TRANSITION"
+    assert (done["status_label"], done["payment_status"]) == ("تم التوصيل", "paid")
 
 
 @pytest.mark.parametrize("steps", [[], ["preparing"], ["preparing", "shipped"]])
@@ -88,12 +82,11 @@ async def test_admin_cancel_from_each_status(
 async def test_ready_for_pickup_cancel_and_restore_stock_rules(
     client: AsyncClient, admin_headers: dict, customer_headers: dict, shop: dict, db_session: AsyncSession
 ) -> None:
-    pickup = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 2)], method="pickup")
-    for step in ("preparing", "ready_for_pickup"):
-        ok(await move(client, admin_headers, pickup["id"], step))
-    keep = await client.post(f"{ADMIN_ORDERS}/{pickup['id']}/cancel", json={"reason": "never picked up", "restore_stock": False}, headers=admin_headers)
+    preparing = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 2)])
+    ok(await move(client, admin_headers, preparing["id"], "preparing"))
+    keep = await client.post(f"{ADMIN_ORDERS}/{preparing['id']}/cancel", json={"reason": "not shipped", "restore_stock": False}, headers=admin_headers)
     assert keep.status_code == 422 and code_of(keep) == "VALIDATION_ERROR"
-    ok(await client.post(f"{ADMIN_ORDERS}/{pickup['id']}/cancel", json={"reason": "never picked up"}, headers=admin_headers))
+    ok(await client.post(f"{ADMIN_ORDERS}/{preparing['id']}/cancel", json={"reason": "cancelled"}, headers=admin_headers))
 
     shipped = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 4)])
     for step in ("preparing", "shipped"):
@@ -123,8 +116,16 @@ async def test_admin_list_filters_and_sorts(
     assert ids(await listing()) == [b["id"], a["id"]]
     assert ids(await listing(sort="oldest")) == [a["id"], b["id"]]
     assert ids(await listing(sort="total_desc")) == [b["id"], a["id"]]
+    await db_session.execute(
+        update(OrderTotal)
+        .where(OrderTotal.order_id == b["id"])
+        .values(currency="USD", subtotal="24.00", shipping_fee="0.00", total="24.00")
+    )
+    await db_session.commit()
+    # total_desc is intentionally SYP total first, then USD total, then newest id.
+    assert ids(await listing(sort="total_desc")) == [a["id"], b["id"]]
     assert ids(await listing(status="preparing")) == [b["id"]]
-    assert ids(await listing(delivery_method="pickup")) == [a["id"]]
+    assert ids(await listing(delivery_method="damascus_courier")) == [b["id"], a["id"]]
     assert ids(await listing(q=str(a["id"]))) == [a["id"]]
     assert ids(await listing(q="mona")) == [b["id"]]
     phone = (await client.get("/api/v1/users/me", headers=other)).json()["phone"]
@@ -141,7 +142,7 @@ async def test_stats(client: AsyncClient, admin_headers: dict, customer_headers:
     o2 = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1), (shop["lip"]["id"], shop["red"]["id"], 1)], method="pickup")  # 20.00
     o3 = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)], method="pickup")  # 8.00
     for order in (o1, o2):
-        for step in ("preparing", "ready_for_pickup", "delivered"):
+        for step in ("preparing", "shipped", "delivered"):
             ok(await move(client, admin_headers, order["id"], step))
     ok(await client.post(f"{ADMIN_ORDERS}/{o3['id']}/cancel", json={"reason": "duplicate"}, headers=admin_headers))
     await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)], method="pickup")  # pending
@@ -149,14 +150,16 @@ async def test_stats(client: AsyncClient, admin_headers: dict, customer_headers:
     stats = ok(await client.get(f"{ADMIN_ORDERS}/stats", headers=admin_headers))
     assert stats["orders_count"] == 4
     assert stats["counts"] == {"pending": 1, "preparing": 0, "shipped": 0, "ready_for_pickup": 0, "delivered": 2, "cancelled": 1}
-    assert (stats["delivered_revenue"], stats["average_order_value"], stats["cancelled_rate"]) == ("36.00", "18.00", 0.25)
+    assert stats["delivered_revenue"] == [{"currency": "SYP", "amount": "30036.00"}]
+    assert stats["average_order_value"] == [{"currency": "SYP", "amount": "15018.00"}]
+    assert stats["cancelled_rate"] == 0.25
     assert stats["top_products"] == [
         {"product_id": shop["simple"]["id"], "name": "Cream", "quantity": 3},
         {"product_id": shop["lip"]["id"], "name": "Lipstick", "quantity": 1},
     ]
     tomorrow = str(clock.utcnow().date() + timedelta(days=1))
     empty = ok(await client.get(f"{ADMIN_ORDERS}/stats", params={"date_from": tomorrow}, headers=admin_headers))
-    assert (empty["orders_count"], empty["delivered_revenue"], empty["cancelled_rate"]) == (0, "0.00", 0.0)
+    assert (empty["orders_count"], empty["delivered_revenue"], empty["cancelled_rate"]) == (0, [], 0.0)
     assert ok(await client.get(f"{ORDERS}/{o1['id']}", headers=customer_headers))["status"] == "delivered"
 
 
@@ -168,7 +171,7 @@ async def two_orders(client: AsyncClient, customer_headers: dict, shop: dict, db
     first = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)], method="pickup")
     other = bearer((await register(client, 73, name="Rana"))["access_token"])
     second = await order_from_cart(client, other, [(shop["simple"]["id"], None, 1)], method="pickup")
-    phone = "+4915123456773"  # register(73)
+    phone = "+963933123473"  # register(73)
     return {"first": first, "second": second, "phone": phone}
 
 
@@ -181,7 +184,7 @@ async def test_numeric_q_exact_order_number(client: AsyncClient, admin_headers: 
     assert await search(client, admin_headers, str(two_orders["first"]["id"])) == [two_orders["first"]["id"]]
 
 
-@pytest.mark.parametrize("q", ["6773", "0151 23456773", "015123456773", "+49 151 23456773", "+4915123456773", "0049-151-234-567-73"])
+@pytest.mark.parametrize("q", ["3473", "0933 123 473", "0933123473", "+963 933 123 473", "+963933123473", "00963-933-123-473"])
 async def test_numeric_q_matches_phone_formats(client: AsyncClient, admin_headers: dict, two_orders: dict, q: str) -> None:
     assert await search(client, admin_headers, q) == [two_orders["second"]["id"]], q
 
@@ -191,7 +194,7 @@ async def test_numeric_q_matching_both_puts_exact_order_first(
 ) -> None:
     first_id = two_orders["first"]["id"]
     # Make the second order's phone snapshot contain the first order's number.
-    await db_session.execute(update(Order).where(Order.id == two_orders["second"]["id"]).values(customer_phone=f"+49151{first_id}99"))
+    await db_session.execute(update(Order).where(Order.id == two_orders["second"]["id"]).values(customer_phone=f"+963933{first_id}"))
     await db_session.commit()
     for sort in ("newest", "oldest", "total_desc"):
         assert await search(client, admin_headers, str(first_id), sort=sort) == [first_id, two_orders["second"]["id"]], sort

@@ -68,7 +68,7 @@ async def test_order_placed_notifies_customer_and_active_admins_only(
         assert (low.link_type, low.link_value) == ("admin_product", str(shop["simple"]["id"]))
 
 
-async def test_status_texts_delivery_and_pickup(
+async def test_status_texts_for_delivery(
     client: AsyncClient, admin_headers: dict, customer_headers: dict, shop: dict, db_session: AsyncSession
 ) -> None:
     async def walk(order_id: int, steps: list[str]) -> list[str]:
@@ -81,11 +81,6 @@ async def test_status_texts_delivery_and_pickup(
     assert await walk(delivery["id"], ["preparing", "shipped", "delivered"]) == [
         f"تم استلام طلبك #{delivery['id']} ✅", f"طلبك #{delivery['id']} قيد التجهيز", f"تم شحن طلبك #{delivery['id']} 🚚",
         f"تم توصيل طلبك #{delivery['id']}، نتمنى أن تنال المنتجات إعجابك",
-    ]
-    pickup = await order_from_cart(client, customer_headers, [(shop["simple"]["id"], None, 1)], method="pickup")
-    assert await walk(pickup["id"], ["preparing", "ready_for_pickup", "delivered"]) == [
-        f"تم استلام طلبك #{pickup['id']} ✅", f"طلبك #{pickup['id']} قيد التجهيز", f"طلبك #{pickup['id']} جاهز للاستلام 🛍️",
-        f"تم استلام طلبك #{pickup['id']}، شكرًا لك",
     ]
 
 
@@ -159,7 +154,7 @@ async def test_back_in_stock_alerts_fans_with_cooldown(
 async def test_back_in_stock_after_the_cooldown(
     client: AsyncClient, admin_headers: dict, shop: dict, db_session: AsyncSession, frozen_clock: FakeClock
 ) -> None:
-    frozen_clock.now = datetime(2026, 7, 1, 10, 0)  # 12:00 Berlin, outside quiet hours
+    frozen_clock.now = datetime(2026, 7, 1, 9, 0)  # 12:00 Damascus, outside quiet hours
     cream = shop["simple"]["id"]
     _, fan = await _fan(client, 72, cream)
     adjust = f"{ADMIN}/products/{cream}/stock-adjust"
@@ -198,13 +193,13 @@ async def test_favorite_alerts_wait_for_quiet_hours_but_orders_do_not(
     client: AsyncClient, admin_headers: dict, customer_headers: dict, shop: dict, db_session: AsyncSession,
     frozen_clock: FakeClock,
 ) -> None:
-    frozen_clock.now = datetime(2026, 7, 1, 20, 0)  # 22:00 in Berlin
+    frozen_clock.now = datetime(2026, 7, 1, 20, 0)  # 23:00 in Damascus
     cream = shop["simple"]["id"]
     await _fan(client, 74, cream)
     for delta in (-5, 2):
         ok(await client.post(f"{ADMIN}/products/{cream}/stock-adjust", json={"delta": delta}, headers=admin_headers))
     (alert,) = await rows(db_session, Notification.type == "favorite_back_in_stock")
-    assert (alert.status, alert.scheduled_at) == ("scheduled", datetime(2026, 7, 2, 7, 0))  # 09:00 Berlin
+    assert (alert.status, alert.scheduled_at) == ("scheduled", datetime(2026, 7, 2, 6, 0))  # 09:00 Damascus
     assert alert.data == {"deferred_by_quiet_hours": True}
 
     await order_from_cart(client, customer_headers, [(cream, None, 1)], method="pickup")

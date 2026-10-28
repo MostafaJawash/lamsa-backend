@@ -29,7 +29,10 @@ async def test_add_simple_line_and_totals(client: AsyncClient, customer_headers:
     assert line["variant"] is None and line["issue"] is None
     assert (line["unit_price"], line["regular_price"], line["compare_at_price"], line["discount_percent"]) == ("8.00", "10.00", "10.00", 20)
     assert (line["line_total"], line["stock_status"], line["stock_left"]) == ("16.00", "in_stock", None)
-    assert (data["items_count"], data["lines_count"], data["subtotal"], data["savings"]) == (2, 1, "16.00", "4.00")
+    assert (data["items_count"], data["lines_count"]) == (2, 1)
+    assert data["subtotals"] == [{"currency": "SYP", "amount": "16.00"}]
+    assert data["savings"] == [{"currency": "SYP", "amount": "4.00"}]
+    assert line["currency"] == "SYP"
     assert data["can_checkout"] is True and data["issues_count"] == 0 and data["notices"] == []
 
     again = await add(client, customer_headers, shop["simple"]["id"], quantity=1)
@@ -139,7 +142,7 @@ async def test_patch_quantity_and_delete(client: AsyncClient, customer_headers: 
     assert ok(await client.delete(f"{CART}/items/{item_id}", headers=customer_headers))["lines"] == []
     ok(await add(client, customer_headers, shop["simple"]["id"]), 201)
     cleared = ok(await client.delete(CART, headers=customer_headers))
-    assert cleared["lines"] == [] and cleared["can_checkout"] is False and cleared["subtotal"] == "0.00"
+    assert cleared["lines"] == [] and cleared["can_checkout"] is False and cleared["subtotals"] == []
 
 
 async def test_patch_variant_and_merge_with_cap(client: AsyncClient, customer_headers: dict, shop: dict) -> None:
@@ -169,26 +172,110 @@ async def test_patch_variant_and_merge_with_cap(client: AsyncClient, customer_he
 async def test_live_prices_and_delivery_quotes(client: AsyncClient, admin_headers: dict, customer_headers: dict, shop: dict, db_session: AsyncSession) -> None:
     ok(await add(client, customer_headers, shop["simple"]["id"], quantity=2), 201)
     quotes = {q["code"]: q for q in (await cart(client, customer_headers))["delivery_quotes"]}
-    assert list(quotes) == ["home", "express", "pickup"]
-    assert (quotes["home"]["fee"], quotes["home"]["is_free"], quotes["home"]["free_from"], quotes["home"]["amount_to_free_shipping"]) == ("4.95", False, "49.00", "33.00")
-    assert (quotes["express"]["fee"], quotes["express"]["amount_to_free_shipping"]) == ("7.95", None)
-    assert (quotes["pickup"]["fee"], quotes["pickup"]["is_free"], quotes["pickup"]["requires_address"]) == ("0.00", True, False)
+    assert list(quotes) == ["damascus_courier", "province_shipping"]
+    assert (quotes["damascus_courier"]["currency"], quotes["damascus_courier"]["fee"],
+            quotes["damascus_courier"]["free_from"], quotes["damascus_courier"]["fee_paid_to_carrier"]) == (
+                "SYP", "15000.00", None, False
+            )
+    assert quotes["damascus_courier"]["totals"] == [{"currency": "SYP", "amount": "15016.00"}]
+    assert (quotes["province_shipping"]["fee"], quotes["province_shipping"]["fee_paid_to_carrier"]) == (
+        "0.00", True
+    )
 
     # Live price change, reflected immediately.
     ok(await client.patch(f"{ADMIN}/products/{shop['simple']['id']}", json={"sale_price": None, "price": "30.00"}, headers=admin_headers))
     data = await cart(client, customer_headers)
-    assert (data["subtotal"], data["savings"], data["lines"][0]["compare_at_price"]) == ("60.00", "0.00", None)
-    home = next(q for q in data["delivery_quotes"] if q["code"] == "home")
-    assert (home["fee"], home["is_free"], home["amount_to_free_shipping"]) == ("0.00", True, None)
+    assert data["subtotals"] == [{"currency": "SYP", "amount": "60.00"}]
+    assert data["savings"] == [] and data["lines"][0]["compare_at_price"] is None
 
     from sqlalchemy import update
 
     from app.modules.delivery.models import DeliveryMethod
 
-    await db_session.execute(update(DeliveryMethod).where(DeliveryMethod.code == "express").values(is_active=False))
+    await db_session.execute(
+        update(DeliveryMethod).where(DeliveryMethod.code == "province_shipping").values(is_active=False)
+    )
     await db_session.commit()
     await bump_catalog()  # direct SQL: what an admin change would trigger
-    assert [q["code"] for q in (await cart(client, customer_headers))["delivery_quotes"]] == ["home", "pickup"]
+    assert [q["code"] for q in (await cart(client, customer_headers))["delivery_quotes"]] == ["damascus_courier"]
+
+
+async def test_mixed_currency_totals_delivery_rules_and_free_threshold(
+    client: AsyncClient,
+    admin_headers: dict[str, str],
+    customer_headers: dict[str, str],
+    shop: dict,
+) -> None:
+    ok(
+        await client.patch(
+            f"{ADMIN}/products/{shop['perfume']['id']}",
+            json={"currency": "USD"},
+            headers=admin_headers,
+        )
+    )
+    ok(await add(client, customer_headers, shop["simple"]["id"], quantity=2), 201)
+    data = ok(
+        await add(
+            client,
+            customer_headers,
+            shop["perfume"]["id"],
+            shop["p50"]["id"],
+            quantity=1,
+        ),
+        201,
+    )
+    assert data["subtotals"] == [
+        {"currency": "SYP", "amount": "16.00"},
+        {"currency": "USD", "amount": "20.00"},
+    ]
+    assert {line["currency"] for line in data["lines"]} == {"SYP", "USD"}
+
+    damascus = ok(
+        await client.get(
+            CART,
+            params={"governorate": "damascus", "delivery_method_code": "damascus_courier"},
+            headers=customer_headers,
+        )
+    )
+    assert [quote["code"] for quote in damascus["delivery_quotes"]] == ["damascus_courier"]
+    assert damascus["totals"] == [
+        {"currency": "SYP", "amount": "15016.00"},
+        {"currency": "USD", "amount": "20.00"},
+    ]
+
+    aleppo = ok(
+        await client.get(
+            CART,
+            params={"governorate": "aleppo", "delivery_method_code": "province_shipping"},
+            headers=customer_headers,
+        )
+    )
+    assert [quote["code"] for quote in aleppo["delivery_quotes"]] == ["province_shipping"]
+    assert aleppo["delivery_fees"] == [{"currency": "SYP", "amount": "0.00"}]
+    assert aleppo["totals"] == aleppo["subtotals"]
+    province = aleppo["delivery_quotes"][0]
+    assert province["fee_paid_to_carrier"] is True
+    assert "شركة الشحن" in province["description"]
+
+    methods = ok(await client.get(f"{ADMIN}/delivery-methods", headers=admin_headers))
+    courier = next(method for method in methods if method["code"] == "damascus_courier")
+    ok(
+        await client.patch(
+            f"{ADMIN}/delivery-methods/{courier['id']}",
+            json={"free_from": "16.00"},
+            headers=admin_headers,
+        )
+    )
+    free = ok(
+        await client.get(
+            CART,
+            params={"governorate": "damascus", "delivery_method_code": "damascus_courier"},
+            headers=customer_headers,
+        )
+    )
+    quote = free["delivery_quotes"][0]
+    assert quote["is_free"] is True and quote["fee"] == "0.00"
+    assert quote["totals"] == free["subtotals"]
 
 
 async def test_line_image_follows_variant_color(client: AsyncClient, customer_headers: dict, shop: dict) -> None:

@@ -47,9 +47,20 @@ async def handle_app_error(request: Request, exc: Exception) -> JSONResponse:
 
 async def handle_validation_error(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, RequestValidationError)
+    errors = exc.errors()
+    if any(
+        err.get("type") == "enum"
+        and "'SYP' or 'USD'" in str((err.get("ctx") or {}).get("expected", ""))
+        for err in errors
+    ):
+        return error_response(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            ErrorCode.UNSUPPORTED_CURRENCY,
+            MESSAGES[ErrorCode.UNSUPPORTED_CURRENCY],
+        )
     details = [
         {"field": _field_name(tuple(err.get("loc", ()))), "message": err.get("msg", "")}
-        for err in exc.errors()
+        for err in errors
     ]
     return error_response(
         status.HTTP_422_UNPROCESSABLE_CONTENT,

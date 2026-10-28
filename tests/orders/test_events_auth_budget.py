@@ -57,7 +57,7 @@ async def test_events_after_commit(
     assert [type(e).__name__ for e in domain(recorded)] == ["OrderPlaced", "StockLow"]
     assert cache_slugs(recorded) == {shop["simple"]["slug"], shop["bundle"]["slug"]}  # the bundle contains it
     placed, low = domain(recorded)
-    assert (placed.order_id, placed.total) == (order["id"], "24.00")
+    assert (placed.order_id, placed.total) == (order["id"], "15024.00 SYP")
     assert (low.product_id, low.variant_id, low.stock, low.threshold) == (shop["simple"]["id"], None, 2, 3)
 
     recorded.clear()

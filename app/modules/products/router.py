@@ -10,6 +10,7 @@ from app.modules.products.schemas import FacetsOut, ProductCardOut, ProductDetai
 from app.shared.dependencies.auth import DbSession, OptionalUser
 from app.shared.dependencies.pagination import DEFAULT_PAGE_SIZE, Page, PageParamsDep
 from app.shared.http_cache import favorites_overlay, normalized_query, query_hash, serve_cached
+from app.shared.enums import Currency
 
 router = APIRouter(prefix="/products", tags=["catalog"])
 
@@ -35,12 +36,14 @@ def list_query(
     q: Annotated[str | None, Query(max_length=200, description="Search text (Arabic or English)")] = None,
     min_price: Annotated[Decimal | None, Query(description="On the shown price")] = None,
     max_price: Annotated[Decimal | None, Query()] = None,
+    price_currency: Annotated[Currency, Query(description="Currency for min_price/max_price")] = Currency.syp,
     in_stock: Annotated[bool, Query()] = False,
     on_sale: Annotated[bool, Query()] = False,
     is_new: Annotated[bool, Query()] = False,
 ) -> ListQuery:
     return ListQuery(
-        category=category, brands=brand, q=q, min_price=min_price, max_price=max_price, in_stock=in_stock,
+        category=category, brands=brand, q=q, min_price=min_price, max_price=max_price,
+        price_currency=price_currency, in_stock=in_stock,
         on_sale=on_sale, is_new=is_new, params=list(request.query_params.multi_items()),
     )
 

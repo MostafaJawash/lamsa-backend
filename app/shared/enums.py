@@ -1,6 +1,13 @@
 from enum import StrEnum
 
 
+class Currency(StrEnum):
+    """Currencies accepted for new catalog, delivery and order data."""
+
+    syp = "SYP"
+    usd = "USD"
+
+
 class LinkType(StrEnum):
     """Where a banner or notification leads when tapped.
 

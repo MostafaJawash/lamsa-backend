@@ -115,7 +115,7 @@ async def hide_out_of_stock(session: AsyncSession) -> bool:
 
 @dataclass(frozen=True)
 class NotificationSettings:
-    timezone: str = "Europe/Berlin"
+    timezone: str = "Asia/Damascus"
     quiet_hours_start: time = time(21, 0)
     quiet_hours_end: time = time(9, 0)
     favorite_alert_cooldown_days: int = 7

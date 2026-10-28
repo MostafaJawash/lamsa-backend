@@ -19,7 +19,7 @@ from app.modules.products.models import Product, ProductVariant
 from app.modules.users.models import User
 from cart_fixtures import add, build_shop
 from conftest import bearer, register
-from order_helpers import expected_total, place
+from order_helpers import address, expected_total, place
 
 pytestmark = pytest.mark.anyio
 
@@ -58,6 +58,8 @@ async def committed(migrated_db: None) -> AsyncIterator[dict[str, Any]]:
                 await session.commit()
                 shop = await build_shop(client, bearer(admin["access_token"]), session)
             users = [bearer((await register(client, n, name=f"Buyer {n}"))["access_token"]) for n in (82, 83)]
+            for user in users:
+                await address(client, user)
             yield {"client": client, "maker": maker, "shop": shop, "users": users}
     finally:
         app.dependency_overrides.pop(get_db, None)
