@@ -539,6 +539,8 @@ Payment is cash on delivery only, with no minimum order and no coupons (`discoun
    - `409 CART_HAS_ISSUES`, `PRICE_CHANGED` or `INSUFFICIENT_STOCK`: something changed since the cart was shown. **Reload the cart** (`details.cart` already contains it for the first two), show what changed, and let the customer confirm again with a **new** Idempotency-Key.
    - `422 CART_EMPTY`, `ADDRESS_REQUIRED`, `DELIVERY_METHOD_NOT_FOUND`, `DELIVERY_METHOD_NOT_AVAILABLE` or `INVALID_LOCATION`.
 
+**How the website (lamsa-web) drives this flow.** Each render of its checkout page is one attempt with a random id; it derives the `Idempotency-Key` from that id and the inputs the customer confirms (address, delivery method, notes, gift message and the per-currency totals on screen). A double submit or a retry therefore reuses the key and gets `200` with the order that already exists, while any changed input or a refreshed page gets a new key. It retries once with the same key after `503 SERVICE_BUSY` (waiting `Retry-After`, at most 5 s), a timeout or a network error. It sends `expected_totals` from the selected quote's `totals` without arithmetic, and links a saved location to OpenStreetMap on the customer's order page (the admin `map_url` stays Google Maps). Under heavy concurrency `POST /users/me/addresses` can, rarely, answer `500` on a MySQL deadlock (1213); unlike cart writes and checkout it is not retried server-side, so clients may simply repeat the request.
+
 Stock is taken when the order is placed and given back when it's cancelled. If two customers try to buy the last item at the same time, exactly one succeeds. The other gets `CART_HAS_ISSUES`, with that line marked `OUT_OF_STOCK`.
 
 ### Statuses
