@@ -18,6 +18,7 @@ from app.modules.users.schemas import (
     PhoneChange,
     UserUpdate,
 )
+from app.shared.db_retry import retry_on_deadlock
 from app.shared.exceptions import Conflict, ErrorCode, NotFound, Unauthorized, ValidationFailed
 from app.shared.utils.phone import normalize_phone
 
@@ -93,9 +94,9 @@ class AddressService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def _lock_user(self, user: User) -> None:
+    async def _lock_user(self, user_id: int) -> None:
         # Serialises address changes of one user (default flag, limit) across requests.
-        await users_repo.get_user(self.session, user.id, for_update=True)
+        await users_repo.get_user(self.session, user_id, for_update=True)
 
     async def list(self, user: User) -> list[UserAddress]:
         return await users_repo.list_addresses(self.session, user.id)
@@ -113,17 +114,25 @@ class AddressService:
         if latitude.as_tuple().exponent < -6 or longitude.as_tuple().exponent < -6:
             raise ValidationFailed(ErrorCode.INVALID_LOCATION)
 
+    # Every write below is one transaction that is retried after an InnoDB deadlock (like cart
+    # writes and checkout; a persistent one is 503 SERVICE_BUSY). The operations take the user's id,
+    # not the ORM object: a rollback expires loaded objects.
+
     async def create(self, user: User, data: AddressCreate) -> UserAddress:
         self._validate_location(data.latitude, data.longitude)
-        await self._lock_user(user)
-        count = await users_repo.count_addresses(self.session, user.id)
+        user_id = user.id
+        return await retry_on_deadlock(self.session, lambda: self._create(user_id, data), what="address create")
+
+    async def _create(self, user_id: int, data: AddressCreate) -> UserAddress:
+        await self._lock_user(user_id)
+        count = await users_repo.count_addresses(self.session, user_id)
         if count >= MAX_ADDRESSES:
             raise ValidationFailed(ErrorCode.ADDRESS_LIMIT_REACHED)
         make_default = data.is_default or count == 0
         if make_default:
-            await users_repo.clear_default_address(self.session, user.id)
+            await users_repo.clear_default_address(self.session, user_id)
         address = UserAddress(
-            user_id=user.id,
+            user_id=user_id,
             **data.model_dump(exclude={"is_default"}),
             is_default=make_default,
             created_at=clock.utcnow(),
@@ -133,8 +142,14 @@ class AddressService:
         return address
 
     async def update(self, user: User, address_id: int, data: AddressUpdate) -> UserAddress:
-        await self._lock_user(user)
-        address = await self._get(user, address_id)
+        user_id = user.id
+        return await retry_on_deadlock(
+            self.session, lambda: self._update(user_id, address_id, data), what="address update"
+        )
+
+    async def _update(self, user_id: int, address_id: int, data: AddressUpdate) -> UserAddress:
+        await self._lock_user(user_id)
+        address = await self._get(user_id, address_id)
         changes = data.model_dump(exclude_unset=True)
         make_default = changes.pop("is_default", None) is True
         for field in ("governorate", "details"):
@@ -148,34 +163,44 @@ class AddressService:
         for field, value in changes.items():
             setattr(address, field, value)
         if make_default and not address.is_default:
-            await users_repo.clear_default_address(self.session, user.id, except_id=address.id)
+            await users_repo.clear_default_address(self.session, user_id, except_id=address.id)
             address.is_default = True
         await self.session.commit()
         return address
 
     async def set_default(self, user: User, address_id: int) -> UserAddress:
-        await self._lock_user(user)
-        address = await self._get(user, address_id)
+        user_id = user.id
+        return await retry_on_deadlock(
+            self.session, lambda: self._set_default(user_id, address_id), what="address default"
+        )
+
+    async def _set_default(self, user_id: int, address_id: int) -> UserAddress:
+        await self._lock_user(user_id)
+        address = await self._get(user_id, address_id)
         if not address.is_default:
-            await users_repo.clear_default_address(self.session, user.id, except_id=address.id)
+            await users_repo.clear_default_address(self.session, user_id, except_id=address.id)
             address.is_default = True
             await self.session.commit()
         return address
 
     async def delete(self, user: User, address_id: int) -> None:
-        await self._lock_user(user)
-        address = await self._get(user, address_id)
+        user_id = user.id
+        await retry_on_deadlock(self.session, lambda: self._delete(user_id, address_id), what="address delete")
+
+    async def _delete(self, user_id: int, address_id: int) -> None:
+        await self._lock_user(user_id)
+        address = await self._get(user_id, address_id)
         was_default = address.is_default
         await self.session.delete(address)
         await self.session.flush()
         if was_default:
-            replacement = await users_repo.newest_address(self.session, user.id)
+            replacement = await users_repo.newest_address(self.session, user_id)
             if replacement is not None:
                 replacement.is_default = True
         await self.session.commit()
 
-    async def _get(self, user: User, address_id: int) -> UserAddress:
-        address = await users_repo.get_address(self.session, user.id, address_id)
+    async def _get(self, user_id: int, address_id: int) -> UserAddress:
+        address = await users_repo.get_address(self.session, user_id, address_id)
         if address is None:
             raise NotFound(ErrorCode.ADDRESS_NOT_FOUND)
         return address
